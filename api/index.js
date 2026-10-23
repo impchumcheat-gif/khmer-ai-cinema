@@ -12,11 +12,41 @@ const HOP_BY_HOP_HEADERS = new Set([
   'upgrade',
 ]);
 
-const jsonResponse = (status, message) => Response.json({ error: message }, { status });
+const sendJson = (response, status, message) => {
+  response.statusCode = status;
+  response.setHeader('content-type', 'application/json; charset=utf-8');
+  response.end(JSON.stringify({ error: message }));
+};
 
-export default async function handler(request) {
+const readRequestBody = (request) => new Promise((resolve, reject) => {
+  const chunks = [];
+  let bytes = 0;
+  let tooLarge = false;
+
+  request.on('data', (chunk) => {
+    bytes += chunk.length;
+    if (bytes > MAX_REQUEST_BYTES) {
+      tooLarge = true;
+      return;
+    }
+    if (!tooLarge) chunks.push(chunk);
+  });
+  request.on('end', () => {
+    if (tooLarge) reject(new Error('Request body is too large.'));
+    else resolve(Buffer.concat(chunks));
+  });
+  request.on('error', reject);
+});
+
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
+export default async function handler(request, response) {
   const backendUrl = process.env.API_BACKEND_URL;
-  if (!backendUrl) return jsonResponse(503, 'The API backend is not configured.');
+  if (!backendUrl) return sendJson(response, 503, 'The API backend is not configured.');
 
   let backend;
   try {
@@ -25,13 +55,13 @@ export default async function handler(request) {
       throw new Error('Invalid API_BACKEND_URL.');
     }
   } catch {
-    return jsonResponse(500, 'API_BACKEND_URL must be a valid HTTP or HTTPS URL.');
+    return sendJson(response, 500, 'API_BACKEND_URL must be a valid HTTP or HTTPS URL.');
   }
 
-  const incomingUrl = new URL(request.url);
+  const incomingUrl = new URL(request.url, `https://${request.headers.host || 'vercel.app'}`);
   const route = incomingUrl.searchParams.get('path');
   if (!route || route.split('/').some((part) => !part || part === '.' || part === '..')) {
-    return jsonResponse(400, 'A valid API path is required.');
+    return sendJson(response, 400, 'A valid API path is required.');
   }
 
   const apiRoute = `api/${route.split('/').map(encodeURIComponent).join('/')}`;
@@ -42,15 +72,17 @@ export default async function handler(request) {
 
   const headers = new Headers();
   for (const name of ['accept', 'content-type', 'cookie', 'user-agent', 'x-admin-password']) {
-    const value = request.headers.get(name);
-    if (value) headers.set(name, value);
+    const value = request.headers[name];
+    if (typeof value === 'string') headers.set(name, value);
   }
 
   let body;
   if (!['GET', 'HEAD'].includes(request.method)) {
-    const bytes = await request.arrayBuffer();
-    if (bytes.byteLength > MAX_REQUEST_BYTES) return jsonResponse(413, 'Request body is too large.');
-    body = bytes;
+    try {
+      body = await readRequestBody(request);
+    } catch (error) {
+      return sendJson(response, error.message === 'Request body is too large.' ? 413 : 400, error.message);
+    }
   }
 
   let upstream;
@@ -62,22 +94,20 @@ export default async function handler(request) {
       redirect: 'manual',
     });
   } catch {
-    return jsonResponse(502, 'Could not connect to the API backend.');
+    return sendJson(response, 502, 'Could not connect to the API backend.');
   }
 
-  const responseHeaders = new Headers();
   for (const [name, value] of upstream.headers) {
     if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase()) && name.toLowerCase() !== 'set-cookie') {
-      responseHeaders.set(name, value);
+      response.setHeader(name, value);
     }
   }
-  for (const cookie of upstream.headers.getSetCookie()) {
-    responseHeaders.append('set-cookie', cookie);
-  }
+  const cookies = upstream.headers.getSetCookie();
+  if (cookies.length) response.setHeader('set-cookie', cookies);
 
-  const responseBody = [204, 304].includes(upstream.status) ? null : await upstream.arrayBuffer();
-  return new Response(responseBody, {
-    status: upstream.status,
-    headers: responseHeaders,
-  });
+  response.statusCode = upstream.status;
+  if ([204, 304].includes(upstream.status) || request.method === 'HEAD') {
+    return response.end();
+  }
+  response.end(Buffer.from(await upstream.arrayBuffer()));
 }
