@@ -10,8 +10,12 @@ services:
       mountPath: /opt/render/project/src/server/data
       sizeGB: 1
     envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
       - key: NODE_ENV
         value: production
+      - key: APP_URL
+        sync: false
       - key: ADMIN_PASSWORD
         sync: false
       - key: RESEND_API_KEY
