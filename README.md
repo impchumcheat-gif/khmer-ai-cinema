@@ -8,8 +8,8 @@ The frontend can be deployed to Vercel, but the account, Google sign-in, payment
 
 1. Create a Render **Blueprint** from this repository and apply the existing `render.yaml`.
 2. Wait for the `khmer-ai-cinema` web service to finish its first deploy. The Blueprint provisions a persistent disk for the SQLite database; keep that disk attached to retain accounts and payment records.
-3. In the Render service environment, set `APP_URL` to the public Vercel website origin, for example `https://khmer-ai-cinema.vercel.app` (no trailing slash).
-4. Set `ADMIN_PASSWORD` to a strong, private password. Configure the Google OAuth, email, and Telegram values if those features are needed.
+3. `APP_URL` and `GOOGLE_REDIRECT_URI` are preconfigured in `render.yaml` for `https://khmer-ai-cinema.vercel.app`. Change these values there if you use a different Vercel domain.
+4. Set `ADMIN_PASSWORD` to a strong, private password. Configure `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and the email/Telegram values if those features are needed.
 
 ### 2. Configure Vercel
 

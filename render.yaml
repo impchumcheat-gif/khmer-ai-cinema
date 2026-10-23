@@ -15,7 +15,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: APP_URL
-        sync: false
+        value: https://khmer-ai-cinema.vercel.app
       - key: ADMIN_PASSWORD
         sync: false
       - key: RESEND_API_KEY
@@ -27,7 +27,7 @@ services:
       - key: GOOGLE_CLIENT_SECRET
         sync: false
       - key: GOOGLE_REDIRECT_URI
-        sync: false
+        value: https://khmer-ai-cinema.vercel.app/api/auth/google/callback
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
