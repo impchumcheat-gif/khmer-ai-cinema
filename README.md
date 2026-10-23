@@ -15,7 +15,7 @@ The frontend can be deployed to Vercel, but the account, Google sign-in, payment
 
 1. Deploy this repository as a Vite project in Vercel. Use `npm run build` as the build command and `dist` as the output directory.
 2. Add the environment variable `API_BACKEND_URL` to the Vercel project, set to the Render service origin, for example `https://khmer-ai-cinema.onrender.com` (no trailing slash).
-3. Redeploy Vercel after setting the environment variable. The function in `api/[...path].js` forwards API requests, login cookies, and redirects to the Render server.
+3. Redeploy Vercel after setting the environment variable. The function in `api/index.js` forwards API requests, login cookies, and redirects to the Render server. `vercel.json` rewrites all `/api/*` routes to that function.
 
 For Google sign-in, register this callback URL in the Google OAuth client:
 
