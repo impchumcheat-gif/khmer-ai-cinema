@@ -5,68 +5,8 @@ import {
 } from 'lucide-react';
 import { loadAppState, saveAppState } from './persistedState.js';
 
-// Sample Initial Movies Data
-const initialMovies = [
-  {
-    id: 1,
-    title: "សង្គ្រាមអាណាចក្រ AI",
-    titleEn: "AI Empire War",
-    category: "Sci-Fi / Action",
-    isPaid: true,
-    price: "$1.99",
-    duration: "1h 45m",
-    rating: "4.8",
-    views: "12.5K",
-    cover: "https://images.unsplash.com/photo-1534447677768-be436bb09401?w=800&q=80",
-    videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-    description: "រឿងភាគនិពន្ធដោយ AI រៀបរាប់អំពីពិភពអនាគតដែលមនុស្ស និង AI ត្រូវប្រយុទ្ធគ្នាដើម្បីរស់។"
-  },
-  {
-    id: 2,
-    title: "ព្រលឹងប្រាសាទបុរាណ",
-    titleEn: "Ancient Temple Spirit",
-    category: "Horror / Fantasy",
-    isPaid: false,
-    price: "FREE",
-    duration: "45m",
-    rating: "4.5",
-    views: "28.1K",
-    cover: "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=800&q=80",
-    videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
-    description: "រឿងរ៉ាវអាថ៌កំបាំងក្នុងប្រាសាទបុរាណ Khmer AI បង្កើតឡើងយ៉ាងរន្ធត់ និងទាក់ទាញ។"
-  },
-  {
-    id: 3,
-    title: "ស្នេហាឆ្លងកាលវេលា",
-    titleEn: "Love Across Time",
-    category: "Romance / Drama",
-    isPaid: false,
-    price: "FREE",
-    duration: "1h 20m",
-    rating: "4.9",
-    views: "45.0K",
-    cover: "https://images.unsplash.com/photo-1518173946687-a4c8a383392e?w=800&q=80",
-    videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-    description: "រឿងភាគស្នេហាយ៉ាងផ្អែមល្ហែមដែលផលិតឡើងដោយសំឡេង និងរូបភាព AI ភាសាខ្មែរ ១០០%។"
-  },
-  {
-    id: 4,
-    title: "វីរបុរសស្រមោល AI",
-    titleEn: "Shadow Hero AI",
-    category: "Action / Hero",
-    isPaid: true,
-    price: "$2.50",
-    duration: "2h 05m",
-    rating: "4.7",
-    views: "8.9K",
-    cover: "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=800&q=80",
-    videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
-    description: "ការផ្សងព្រេងរបស់វីរបុរសជំនាន់ថ្មីដើម្បីការពារក្រុងភ្នំពេញក្នុងឆ្នាំ ២០៥០។"
-  }
-];
-
 export default function App() {
-  const [movies, setMovies] = useState(initialMovies);
+  const [movies, setMovies] = useState([]);
   const [activeTab, setActiveTab] = useState('home'); // home, admin, watch
   const [selectedMovie, setSelectedMovie] = useState(null);
   const [filter, setFilter] = useState('all'); // all, free, paid
@@ -215,14 +155,16 @@ export default function App() {
       if (!isCurrent) return;
 
       if (savedState && Array.isArray(savedState.movies)) {
-        setMovies(savedState.movies.map((movie) => ({
+        const savedMovies = savedState.movies.filter((movie) => !movie.videoUrl?.includes('/gtv-videos-bucket/sample/'));
+        const movieIds = new Set(savedMovies.map((movie) => movie.id));
+        setMovies(savedMovies.map((movie) => ({
           ...movie,
           cover: movie.coverBlob ? URL.createObjectURL(movie.coverBlob) : movie.cover,
           videoUrl: movie.videoBlob ? URL.createObjectURL(movie.videoBlob) : movie.videoUrl,
         })));
         if (!hasAuthenticatedAccount.current) {
-          setFavorites(Array.isArray(savedState.favorites) ? savedState.favorites : []);
-          setWatchProgress(Array.isArray(savedState.watchProgress) ? savedState.watchProgress : []);
+          setFavorites(Array.isArray(savedState.favorites) ? savedState.favorites.filter((id) => movieIds.has(id)) : []);
+          setWatchProgress(Array.isArray(savedState.watchProgress) ? savedState.watchProgress.filter((item) => movieIds.has(item.movieId)) : []);
         }
       }
 
@@ -579,7 +521,7 @@ export default function App() {
   // Add or update a movie (Admin)
   const handleAddMovie = (e) => {
     e.preventDefault();
-    if (!newMovie.title || !newMovie.videoUrl) return alert("សូមបំពេញព័ត៌មានចាំបាច់ និងជ្រើសរើសវីដេអូ!");
+    if (!newMovie.title || !newMovie.videoUrl || !newMovie.cover) return alert("សូមបំពេញចំណងជើង បញ្ចូលវីដេអូ និងរូប Poster ពិតរបស់ភាពយន្ត!");
     if (editingMovieId !== null) {
       setMovies((currentMovies) => currentMovies.map((movie) => movie.id === editingMovieId ? {
         ...movie,
@@ -594,10 +536,10 @@ export default function App() {
       const created = {
         ...newMovie,
         id: Date.now(),
-        rating: '5.0',
-        views: '1',
+        rating: '',
+        views: '0',
         price: newMovie.isPaid ? (newMovie.price || '$1.00') : 'FREE',
-        cover: newMovie.cover || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?w=800&q=80',
+        cover: newMovie.cover,
       };
       setMovies((currentMovies) => [created, ...currentMovies]);
     }
@@ -772,14 +714,10 @@ export default function App() {
                   <h1 className="text-2xl font-bold text-white">{selectedMovie.title}</h1>
                   <p className="text-sm text-slate-400">{selectedMovie.titleEn} • {selectedMovie.category}</p>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="px-3 py-1 bg-slate-800 text-slate-300 rounded-lg text-xs">
-                    ទស្សនា: {selectedMovie.views} ដង
-                  </span>
-                  <span className="px-3 py-1 bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded-lg text-xs font-semibold">
-                    ⭐ {selectedMovie.rating}
-                  </span>
-                </div>
+                {(selectedMovie.rating || Number(selectedMovie.views) > 0) && <div className="flex items-center gap-3">
+                  {Number(selectedMovie.views) > 0 && <span className="px-3 py-1 bg-slate-800 text-slate-300 rounded-lg text-xs">ទស្សនា: {selectedMovie.views} ដង</span>}
+                  {selectedMovie.rating && <span className="px-3 py-1 bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded-lg text-xs font-semibold">⭐ {selectedMovie.rating}</span>}
+                </div>}
               </div>
               <p className="text-slate-300 text-sm leading-relaxed border-t border-slate-800/80 pt-4">
                 {selectedMovie.description}
@@ -907,6 +845,7 @@ export default function App() {
               </section>
             )}
 
+            {movies.length > 0 && <>
             {/* Filter Buttons */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-4">
               <div className="flex gap-2">
@@ -968,6 +907,7 @@ export default function App() {
                 ))}
               </div>
             </div>
+            </>}
 
             {/* Movie Grid */}
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 md:gap-6">
@@ -1035,19 +975,33 @@ export default function App() {
                         </span>
                       )}
 
-                      <div className="flex items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-slate-800/60">
-                        <span>⭐ {movie.rating}</span>
-                        <span>{movie.views} views</span>
-                      </div>
+                      {(movie.rating || Number(movie.views) > 0) && <div className="flex items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-slate-800/60">
+                        {movie.rating && <span>⭐ {movie.rating}</span>}
+                        {Number(movie.views) > 0 && <span>{movie.views} views</span>}
+                      </div>}
                     </div>
                   </div>
                 );
               })}
             </div>
             {filteredMovies.length === 0 && (
-              <p className="rounded-xl border border-dashed border-slate-700 p-8 text-center text-sm text-slate-400">
-                {filter === 'favorites' ? 'បញ្ជីចង់មើលរបស់អ្នកនៅទទេ។ ចុចរូបបេះដូងលើរឿងដើម្បីរក្សាទុក។' : 'រកមិនឃើញរឿងដែលត្រូវនឹងការស្វែងរកទេ។'}
-              </p>
+              <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 p-8 text-center">
+                <h3 className="text-lg font-bold text-white">
+                  {movies.length === 0 ? 'មិនទាន់មានភាពយន្តពិតនៅឡើយទេ' : filter === 'favorites' ? 'បញ្ជីចង់មើលរបស់អ្នកនៅទទេ' : 'រកមិនឃើញភាពយន្តដែលត្រូវនឹងការស្វែងរកទេ'}
+                </h3>
+                <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-400">
+                  {movies.length === 0
+                    ? 'ភាពយន្តនឹងបង្ហាញនៅទីនេះ បន្ទាប់ពីអ្នកគ្រប់គ្រងបង្ហោះវីដេអូដែលមានសិទ្ធិចែករំលែក។'
+                    : filter === 'favorites'
+                      ? 'ចុចរូបបេះដូងលើភាពយន្ត ដើម្បីរក្សាទុកក្នុងបញ្ជីចង់មើល។'
+                      : 'សាកកែពាក្យស្វែងរក ឬជ្រើសប្រភេទផ្សេង។'}
+                </p>
+                {movies.length === 0 && (
+                  <button type="button" onClick={openAdminPanel} className="mt-5 rounded-xl bg-red-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-red-500">
+                    ចូលផ្ទាំងអ្នកគ្រប់គ្រង ដើម្បីបន្ថែមភាពយន្ត
+                  </button>
+                )}
+              </div>
             )}
           </div>
         )}
