@@ -76,6 +76,42 @@ const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[character]));
 
+const sendTelegramMessage = async (text) => {
+  const { TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID } = process.env;
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    return { sent: false, error: 'Render is missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID.' };
+  }
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok !== true) {
+      return { sent: false, error: typeof result.description === 'string' ? result.description : `Telegram returned HTTP ${response.status}.` };
+    }
+    return { sent: true, error: '' };
+  } catch {
+    return { sent: false, error: 'Could not connect to Telegram. Check the Render service network and try again.' };
+  }
+};
+
+const orderTelegramMessage = (order) => [
+  '<b>New movie order</b>',
+  `Customer: ${escapeHtml(order.customerName)} (${escapeHtml(order.customerEmail)})`,
+  `Customer Telegram: ${escapeHtml(order.telegramUsername)}`,
+  `Movie: ${escapeHtml(order.item)}`,
+  `Price: ${escapeHtml(order.amount)}`,
+  `Order: <code>${order.id}</code>`,
+  `Claim code: <code>${order.claimCode}</code>`,
+  order.amount === 'FREE'
+    ? 'Status: Free request. Send the movie to the customer on Telegram.'
+    : 'Status: Payment pending. Verify ABA, then send the movie to the customer on Telegram.',
+].join('\n');
+
 let database;
 const emptyDb = () => ({ users: [], orders: [], entitlements: [], emailTokens: [], passwordResetTokens: [], magicTokens: [], googleStates: [], sessions: [], movieViews: [], movies: [] });
 const loadDb = async () => {
@@ -676,33 +712,31 @@ const server = createServer(async (request, response) => {
         telegramUsername: `@${telegramUsername}`,
         status: movie.isPaid ? 'pending' : 'approved',
         deliveryStatus: 'pending',
+        telegramNotificationSent: false,
         createdAt: new Date().toISOString(),
       };
       await updateDb((latest) => { latest.orders.push(order); });
 
-      let notificationSent = false;
-      const { TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID } = process.env;
-      if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-        const message = [
-          '<b>New movie purchase request</b>',
-          `Customer: ${escapeHtml(user.name)} (${escapeHtml(user.email)})`,
-          `Telegram: ${escapeHtml(order.telegramUsername)}`,
-          `Movie: ${escapeHtml(order.item)}`, `Amount: ${escapeHtml(order.amount)}`,
-          `Order: <code>${order.id}</code>`, `Claim code: <code>${order.claimCode}</code>`,
-          movie.isPaid
-            ? 'Status: Pending. Verify the ABA payment, then send the movie manually via Telegram.'
-            : 'Status: Free order. Send the movie manually via Telegram.',
-        ].join('\n');
-        try {
-          const result = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message, parse_mode: 'HTML' }),
-          });
-          notificationSent = result.ok;
-        } catch { /* The order remains available in the admin queue. */ }
-      }
+      const notification = await sendTelegramMessage(orderTelegramMessage(order));
+      order.telegramNotificationSent = notification.sent;
+      order.telegramNotificationError = notification.error;
+      await updateDb((latest) => {
+        const index = latest.orders.findIndex((entry) => entry.id === order.id);
+        if (index >= 0) latest.orders[index] = order;
+      });
       paymentAttempts.set(ip, Date.now());
-      return json(response, 201, { orderId: order.id, claimCode: order.claimCode, status: order.status, deliveryStatus: order.deliveryStatus, item: order.item, amount: order.amount, movieId: order.movieId, telegramUsername: order.telegramUsername, notificationSent });
+      return json(response, 201, {
+        orderId: order.id,
+        claimCode: order.claimCode,
+        status: order.status,
+        deliveryStatus: order.deliveryStatus,
+        item: order.item,
+        amount: order.amount,
+        movieId: order.movieId,
+        telegramUsername: order.telegramUsername,
+        notificationSent: notification.sent,
+        notificationError: notification.error,
+      });
     }
 
     if (request.method === 'GET' && url.pathname === '/api/payment-status') {
@@ -719,6 +753,11 @@ const server = createServer(async (request, response) => {
     if (url.pathname.startsWith('/api/admin/')) {
       const adminPassword = process.env.ADMIN_PASSWORD;
       if (!adminPassword || !safeEqual(request.headers['x-admin-password'], adminPassword)) return json(response, 401, { error: 'Admin password is incorrect or missing.' });
+      if (request.method === 'POST' && url.pathname === '/api/admin/telegram/test') {
+        const notification = await sendTelegramMessage('<b>Khmer AI Cinema Telegram test</b>\nBot alerts are connected. New movie orders will be sent to this chat.');
+        if (!notification.sent) return json(response, 502, { error: notification.error });
+        return json(response, 200, { sent: true });
+      }
       const db = await loadDb();
       if (request.method === 'POST' && url.pathname === '/api/admin/movies') {
         const body = await readJson(request, 16 * 1024);
@@ -783,6 +822,20 @@ const server = createServer(async (request, response) => {
       }
       if (request.method === 'GET' && url.pathname === '/api/admin/orders') {
         return json(response, 200, db.orders.slice().reverse().map(({ userId: _userId, ...order }) => order));
+      }
+      const notificationMatch = url.pathname.match(/^\/api\/admin\/orders\/([\w-]+)\/notify$/);
+      if (request.method === 'POST' && notificationMatch) {
+        const order = db.orders.find((entry) => entry.id === notificationMatch[1]);
+        if (!order) return json(response, 404, { error: 'Order not found.' });
+        const notification = await sendTelegramMessage(orderTelegramMessage(order));
+        order.telegramNotificationSent = notification.sent;
+        order.telegramNotificationError = notification.error;
+        await updateDb((latest) => {
+          const index = latest.orders.findIndex((entry) => entry.id === order.id);
+          if (index >= 0) latest.orders[index] = order;
+        });
+        if (!notification.sent) return json(response, 502, { error: notification.error, notificationSent: false });
+        return json(response, 200, { notificationSent: true });
       }
       const deliveryMatch = url.pathname.match(/^\/api\/admin\/orders\/([\w-]+)\/delivered$/);
       if (request.method === 'POST' && deliveryMatch) {

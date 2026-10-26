@@ -29,7 +29,7 @@ Set `APP_URL` on Render to the same Vercel origin. If `GOOGLE_REDIRECT_URI` is s
 
 Movies are stored in the Render SQLite database and are visible to every visitor. Admins can choose a JPEG, PNG, or WebP poster from their computer (up to 10 MB); poster images are stored on the Render persistent disk. A public HTTPS poster URL can also be used. Free movies can be marked **Free**; paid movies require a price. Movie videos are not uploaded or stored by the website.
 
-Customers sign in, choose a movie, provide their Telegram username, and submit an ABA payment request. The owner verifies the payment manually in ABA, approves the order in Admin, sends the movie to the customer through Telegram, then marks the order as sent. The Telegram bot can notify the owner about new orders when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured. Movie files are sent manually and are never uploaded to this website.
+Customers sign in, choose a movie, provide their Telegram username, and submit an ABA payment request. The owner verifies the payment manually in ABA, approves the order in Admin, sends the movie to the customer through Telegram, then marks the order as sent. Configure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the Render service environment to notify the owner about every new order. In Admin, use **ផ្ញើសារសាកល្បងទៅ Telegram bot** to verify the bot configuration; failed order alerts show the Telegram error and can be retried from the order list. Movie files are sent manually and are never uploaded to this website.
 
 ### Local development
 

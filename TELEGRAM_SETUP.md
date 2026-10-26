@@ -24,15 +24,16 @@ Keep the bot token, Resend API key and admin password private. `.env` is ignored
 
 1. The customer creates an account with a name, email and password, then opens the one-hour verification link sent by email before signing in.
 2. Paid films and VIP checkout require an account. Free films remain available without an account.
-3. The payment request is linked to the signed-in account. The owner receives the account name/email, item, amount and order ID in Telegram when the bot is configured.
-4. The customer pays using the personal KHQR and checks the request status from their signed-in browser.
+3. The order is linked to the signed-in account and includes the customer's Telegram username. Paid movies create an ABA payment request; Free movies do not require payment.
+4. When `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured, the owner receives the customer, movie, amount and order details in Telegram. The owner sends the movie to the customer manually.
 
 ## Admin flow
 
 1. Open Admin from the app settings and enter `ADMIN_PASSWORD`.
-2. Load payment requests.
-3. Verify the amount and transaction in ABA yourself.
-4. Approve only the matching request. The customer can then check their order status in the same browser and unlock the movie.
+2. In **Movie orders · ABA / Telegram**, send a test message to verify the Telegram bot configuration.
+3. If the test fails, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the Render service's Environment settings, then restart/redeploy the service and test again. Never put these values in the frontend or share them publicly.
+4. Check each order's Telegram alert status. Failed alerts include an error and can be retried from the order list.
+5. For paid movies, verify the amount and transaction in ABA and approve only the matching request. Send the movie to the customer's Telegram username manually, then mark the order as sent. Free requests can be sent without ABA approval.
 
 The API stores account password hashes, orders, sessions and access grants in the SQLite database at `server/data/app-data.sqlite`. Passwords and email action tokens are never stored as plain text. Existing `app-data.json` content is migrated on startup. The Render blueprint in `render.yaml` mounts a persistent disk at this folder and serves the built frontend and API together over Render HTTPS.
 

@@ -53,6 +53,8 @@ export default function App() {
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [paymentOrders, setPaymentOrders] = useState([]);
   const [adminOrderError, setAdminOrderError] = useState('');
+  const [telegramTestState, setTelegramTestState] = useState({ loading: false, message: '', error: '' });
+  const [telegramRetryingOrderId, setTelegramRetryingOrderId] = useState('');
   const [analytics, setAnalytics] = useState(null);
 
   // Admin New Movie Form
@@ -348,7 +350,9 @@ export default function App() {
       if (!response.ok) throw new Error(result.error || 'Could not create order');
       setPaymentOrder(result);
       setTelegramUsername(result.telegramUsername);
-      setPaymentStatusMessage(result.notificationSent ? '' : 'សំណើត្រូវបានរក្សាទុក ប៉ុន្តែមិនអាចផ្ញើដំណឹង Telegram បានទេ។');
+      setPaymentStatusMessage(result.notificationSent
+        ? 'សំណើបានផ្ញើដំណឹងទៅ bot Telegram របស់ម្ចាស់រួចហើយ។'
+        : `សំណើបានរក្សាទុក ប៉ុន្តែការផ្ញើទៅ bot បរាជ័យ៖ ${result.notificationError || 'សូមទាក់ទងម្ចាស់វេបសាយ។'}`);
       setPayStep(result.status === 'approved' ? 3 : 2);
     } catch (error) {
       setTelegramNoticeError(error instanceof Error ? error.message : 'Could not create payment request');
@@ -440,6 +444,45 @@ export default function App() {
       setPaymentOrder((current) => current?.orderId === orderId ? { ...current, deliveryStatus: 'sent' } : current);
     } catch (error) {
       setAdminOrderError(error instanceof Error ? error.message : 'Could not mark the movie as sent.');
+    }
+  };
+
+  const testTelegramConnection = async () => {
+    setTelegramTestState({ loading: true, message: '', error: '' });
+    try {
+      const response = await fetch('/api/admin/telegram/test', {
+        method: 'POST',
+        headers: { 'x-admin-password': adminPassword },
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Telegram test message could not be sent.');
+      setTelegramTestState({ loading: false, message: 'សារសាកល្បងបានផ្ញើទៅ Telegram bot រួចហើយ។', error: '' });
+    } catch (error) {
+      setTelegramTestState({
+        loading: false,
+        message: '',
+        error: error instanceof Error ? error.message : 'Telegram test message could not be sent.',
+      });
+    }
+  };
+
+  const retryTelegramNotification = async (orderId) => {
+    setTelegramRetryingOrderId(orderId);
+    setAdminOrderError('');
+    try {
+      const response = await fetch(`/api/admin/orders/${orderId}/notify`, {
+        method: 'POST',
+        headers: { 'x-admin-password': adminPassword },
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not send the Telegram alert.');
+      setPaymentOrders((orders) => orders.map((order) => order.id === orderId
+        ? { ...order, telegramNotificationSent: true, telegramNotificationError: '' }
+        : order));
+    } catch (error) {
+      setAdminOrderError(error instanceof Error ? error.message : 'Could not send the Telegram alert.');
+    } finally {
+      setTelegramRetryingOrderId('');
     }
   };
 
@@ -910,6 +953,16 @@ export default function App() {
               <div>
                 <h4 className="pb-2 text-sm font-bold text-white">Movie orders · ABA / Telegram</h4>
                 <p className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-100">១. ពិនិត្យប្រាក់ ABA ហើយចុច “បញ្ជាក់ប្រាក់”។ ២. ផ្ញើភាពយន្តទៅ Telegram username របស់អតិថិជនដោយដៃ។ ៣. បន្ទាប់មកចុច “បានផ្ញើ”។</p>
+                <div className="mb-3 space-y-2 rounded-lg border border-slate-700 bg-slate-950 p-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button type="button" onClick={testTelegramConnection} disabled={telegramTestState.loading} className="rounded-lg bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-600 disabled:opacity-50">
+                      {telegramTestState.loading ? 'កំពុងសាកល្បង…' : 'ផ្ញើសារសាកល្បងទៅ Telegram bot'}
+                    </button>
+                    <span className="text-xs text-slate-400">សាកល្បងការជូនដំណឹង និងពិនិត្យការកំណត់នៅ Render</span>
+                  </div>
+                  {telegramTestState.message && <p className="text-sm text-emerald-300" role="status">{telegramTestState.message}</p>}
+                  {telegramTestState.error && <p className="text-sm text-red-300" role="alert">{telegramTestState.error}</p>}
+                </div>
                 {adminOrderError && <p className="mb-3 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{adminOrderError}</p>}
                 {paymentOrders.length > 0 ? <div className="divide-y divide-slate-800 rounded-xl border border-slate-800 px-3">
                   {paymentOrders.map((order) => (
@@ -918,9 +971,19 @@ export default function App() {
                         <p className="font-semibold text-white">{order.item} · {order.amount}</p>
                         <p className="text-slate-400">Customer: {order.customerName} · {order.customerEmail}</p>
                         <p className="text-sky-300">Telegram: {order.telegramUsername || 'Not provided'}</p>
+                        <p className={order.telegramNotificationSent ? 'text-emerald-300' : 'text-red-300'}>
+                          {order.telegramNotificationSent
+                            ? 'Telegram bot alert sent'
+                            : order.telegramNotificationError
+                              ? `Telegram alert failed: ${order.telegramNotificationError}`
+                              : 'Telegram alert status unavailable'}
+                        </p>
                         <p className="break-all text-xs text-slate-500">Order {order.id} · Code {order.claimCode} · {new Date(order.createdAt).toLocaleString()}</p>
                       </div>
                       <div className="flex shrink-0 flex-col gap-2">
+                        {!order.telegramNotificationSent && <button type="button" onClick={() => retryTelegramNotification(order.id)} disabled={telegramRetryingOrderId === order.id} className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-bold text-white hover:bg-slate-600 disabled:opacity-50">
+                          {telegramRetryingOrderId === order.id ? 'កំពុងផ្ញើ…' : 'ព្យាយាមផ្ញើដំណឹងម្ដងទៀត'}
+                        </button>}
                         {order.status === 'pending'
                           ? <button type="button" onClick={() => approvePaymentOrder(order.id)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-500">បញ្ជាក់ប្រាក់ ABA</button>
                           : <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-center text-xs font-semibold text-emerald-300">{order.amount === 'FREE' ? 'Free · រួចរាល់សម្រាប់ផ្ញើ' : 'បានបញ្ជាក់ប្រាក់'}</span>}
@@ -1214,6 +1277,7 @@ export default function App() {
                   <h3 className="text-xl font-bold text-white">{paymentOrder?.deliveryStatus === 'sent' ? 'បានផ្ញើរឿងរួចហើយ' : paymentOrder?.amount === 'FREE' ? 'បានទទួលសំណើ Free' : 'បានបញ្ជាក់ការទូទាត់'}</h3>
                   <p className="mt-1 text-xs text-slate-400">{paymentOrder?.deliveryStatus === 'sent' ? `សូមពិនិត្យ Telegram ${paymentOrder?.telegramUsername || telegramUsername} ដើម្បីទទួលភាពយន្ត។` : paymentOrder?.amount === 'FREE' ? `សំណើ Free របស់អ្នកបានទទួលហើយ។ សូមរង់ចាំរឿងតាម Telegram ${paymentOrder?.telegramUsername || telegramUsername}។` : `ការទូទាត់បានផ្ទៀងផ្ទាត់ហើយ។ សូមរង់ចាំទទួលរឿងតាម Telegram ${paymentOrder?.telegramUsername || telegramUsername}។`}</p>
                 </div>
+                {paymentStatusMessage && <p className="text-xs text-amber-200" role="status">{paymentStatusMessage}</p>}
                 <button type="button" onClick={checkPaymentStatus} className="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">ធ្វើបច្ចុប្បន្នភាពស្ថានភាព Telegram</button>
                 <button type="button" onClick={() => setShowPayModal(false)} className="w-full rounded-xl bg-slate-700 py-3 font-bold text-white hover:bg-slate-600">បិទ</button>
               </div>
