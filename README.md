@@ -7,7 +7,7 @@ The frontend can be deployed to Vercel, but the account, Google sign-in, payment
 ### 1. Deploy the API server to Render
 
 1. Create a Render **Blueprint** from this repository and apply the existing `render.yaml`.
-2. Wait for the `khmer-ai-cinema` web service to finish its first deploy. The Blueprint provisions a persistent disk for the SQLite database; keep that disk attached to retain accounts and payment records.
+2. Wait for the `khmer-ai-cinema` web service to finish its first deploy. The persistent disk stores the SQLite database (accounts, payment records, and movie catalog). The current Blueprint uses a Starter web service and a 1 GB disk; check Render's current pricing before deploying. A free service without persistent storage can lose database changes after a restart or redeploy.
 3. `APP_URL` and `GOOGLE_REDIRECT_URI` are preconfigured in `render.yaml` for `https://khmer-ai-cinema.vercel.app`. Change these values there if you use a different Vercel domain.
 4. Set `ADMIN_PASSWORD` to a strong, private password. Configure `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and the email/Telegram values if those features are needed.
 
@@ -24,6 +24,12 @@ https://YOUR-VERCEL-DOMAIN/api/auth/google/callback
 ```
 
 Set `APP_URL` on Render to the same Vercel origin. If `GOOGLE_REDIRECT_URI` is set, it must equal the callback URL above. Do not put credentials or passwords in this file or in frontend environment variables.
+
+### Poster catalog and Telegram delivery
+
+Movies are stored in the Render SQLite database and are visible to every visitor. Each catalog entry stores movie details, price, and a publicly accessible HTTPS poster URL; it does not upload or store poster files or movie videos. Use an image host that allows public embedding for poster URLs.
+
+Customers sign in, choose a movie, provide their Telegram username, and submit an ABA payment request. The owner verifies the payment manually in ABA, approves the order in Admin, sends the movie to the customer through Telegram, then marks the order as sent. The Telegram bot can notify the owner about new orders when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured. Movie files are sent manually and are never uploaded to this website.
 
 ### Local development
 

@@ -1,22 +1,24 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { 
-  Play, Lock, Unlock, Crown, Search, Film, Settings,
-  Plus, Trash2, Shield, ArrowLeft, Pencil, LogOut, UserRound, Heart, Info, Clock3
+  Lock, Crown, Search, Film, Settings,
+  Plus, Trash2, Shield, Pencil, LogOut, UserRound, Heart, Info
 } from 'lucide-react';
 import { loadAppState, saveAppState } from './persistedState.js';
 
 export default function App() {
   const [movies, setMovies] = useState([]);
-  const [activeTab, setActiveTab] = useState('home'); // home, admin, watch
-  const [selectedMovie, setSelectedMovie] = useState(null);
-  const [filter, setFilter] = useState('all'); // all, free, paid
+  const [movieCatalogError, setMovieCatalogError] = useState('');
+  const [movieFormError, setMovieFormError] = useState('');
+  const [isSavingMovie, setIsSavingMovie] = useState(false);
+  const [activeTab, setActiveTab] = useState('home'); // home, admin, customer
+  const [filter, setFilter] = useState('all'); // all, favorites
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [favorites, setFavorites] = useState([]);
   const [watchProgress, setWatchProgress] = useState([]);
   const hasAuthenticatedAccount = useRef(false);
   const [detailsMovie, setDetailsMovie] = useState(null);
-  const [watchError, setWatchError] = useState('');
+  const [profileSyncError, setProfileSyncError] = useState('');
   const [isStorageReady, setIsStorageReady] = useState(false);
   const [storageError, setStorageError] = useState('');
   const [currentUser, setCurrentUser] = useState(null);
@@ -33,8 +35,6 @@ export default function App() {
   const [checkoutAfterAuth, setCheckoutAfterAuth] = useState(false);
   
   // User Access State
-  const [isVipUser, setIsVipUser] = useState(false);
-  const [unlockedMovieIds, setUnlockedMovieIds] = useState([]);
   
   // Modal & Payment States
   const [showPayModal, setShowPayModal] = useState(false);
@@ -42,8 +42,8 @@ export default function App() {
   const [payStep, setPayStep] = useState(1); // 1: customer details, 2: payment pending, 3: approved
   const [telegramNoticeError, setTelegramNoticeError] = useState('');
   const [paymentOrder, setPaymentOrder] = useState(null);
+  const [telegramUsername, setTelegramUsername] = useState('');
   const [paymentStatusMessage, setPaymentStatusMessage] = useState('');
-  const [customerAccessMessage, setCustomerAccessMessage] = useState('');
   const [isCreatingOrder, setIsCreatingOrder] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
@@ -53,7 +53,7 @@ export default function App() {
 
   // Admin New Movie Form
   const [newMovie, setNewMovie] = useState({
-    title: '', category: 'Action', isPaid: false, price: '$1.00', duration: '1h 00m', cover: '', videoUrl: '', description: ''
+    title: '', category: 'Action', isPaid: true, price: '$1.00', duration: '1h 00m', cover: '', description: ''
   });
   const [editingMovieId, setEditingMovieId] = useState(null);
 
@@ -63,8 +63,6 @@ export default function App() {
     const account = await response.json();
     hasAuthenticatedAccount.current = Boolean(account.user);
     setCurrentUser(account.user);
-    setIsVipUser(Boolean(account.access?.vip));
-    setUnlockedMovieIds(Array.isArray(account.access?.movieIds) ? account.access.movieIds : []);
     setPaymentOrder(account.latestOrder || null);
     const profile = {
       favorites: Array.isArray(account.profile?.favorites) ? account.profile.favorites : [],
@@ -88,8 +86,6 @@ export default function App() {
       if (!isCurrent) return;
       hasAuthenticatedAccount.current = Boolean(account.user);
       setCurrentUser(account.user);
-      setIsVipUser(Boolean(account.access?.vip));
-      setUnlockedMovieIds(Array.isArray(account.access?.movieIds) ? account.access.movieIds : []);
       setPaymentOrder(account.latestOrder || null);
       const profile = {
         favorites: Array.isArray(account.profile?.favorites) ? account.profile.favorites : [],
@@ -151,27 +147,26 @@ export default function App() {
   useEffect(() => {
     let isCurrent = true;
 
-    loadAppState().then((savedState) => {
+    const catalogRequest = fetch('/api/movies').then(async (response) => {
+      const result = await response.json();
+      if (!response.ok || !Array.isArray(result)) throw new Error(result.error || 'Could not load the shared movie catalog.');
+      return result;
+    });
+    Promise.allSettled([loadAppState(), catalogRequest]).then(([savedResult, catalogResult]) => {
       if (!isCurrent) return;
 
-      if (savedState && Array.isArray(savedState.movies)) {
-        const savedMovies = savedState.movies.filter((movie) => !movie.videoUrl?.includes('/gtv-videos-bucket/sample/'));
-        const movieIds = new Set(savedMovies.map((movie) => movie.id));
-        setMovies(savedMovies.map((movie) => ({
-          ...movie,
-          cover: movie.coverBlob ? URL.createObjectURL(movie.coverBlob) : movie.cover,
-          videoUrl: movie.videoBlob ? URL.createObjectURL(movie.videoBlob) : movie.videoUrl,
-        })));
-        if (!hasAuthenticatedAccount.current) {
-          setFavorites(Array.isArray(savedState.favorites) ? savedState.favorites.filter((id) => movieIds.has(id)) : []);
-          setWatchProgress(Array.isArray(savedState.watchProgress) ? savedState.watchProgress.filter((item) => movieIds.has(item.movieId)) : []);
-        }
+      if (savedResult.status === 'fulfilled' && savedResult.value && Array.isArray(savedResult.value.movies)) {
+        const savedState = savedResult.value;
+          if (!hasAuthenticatedAccount.current) {
+            setFavorites(Array.isArray(savedState.favorites) ? savedState.favorites : []);
+            setWatchProgress(Array.isArray(savedState.watchProgress) ? savedState.watchProgress : []);
+          }
+      } else if (savedResult.status === 'rejected') {
+        setStorageError(savedResult.reason instanceof Error ? savedResult.reason.message : String(savedResult.reason));
       }
+      if (catalogResult.status === 'fulfilled') setMovies(catalogResult.value);
+      else setMovieCatalogError(catalogResult.reason instanceof Error ? catalogResult.reason.message : String(catalogResult.reason));
 
-      setIsStorageReady(true);
-    }).catch((error) => {
-      if (!isCurrent) return;
-      setStorageError(error instanceof Error ? error.message : String(error));
       setIsStorageReady(true);
     });
 
@@ -183,10 +178,10 @@ export default function App() {
   useEffect(() => {
     if (!isStorageReady || storageError) return;
 
-    saveAppState({ movies, isVipUser, unlockedMovieIds, paymentOrder, favorites, watchProgress }).catch((error) => {
+    saveAppState({ paymentOrder, favorites, watchProgress }).catch((error) => {
       setStorageError(error instanceof Error ? error.message : String(error));
     });
-  }, [isStorageReady, storageError, movies, isVipUser, unlockedMovieIds, paymentOrder, favorites, watchProgress]);
+  }, [isStorageReady, storageError, paymentOrder, favorites, watchProgress]);
 
   useEffect(() => {
     if (!currentUser || !isAuthReady) return;
@@ -200,7 +195,7 @@ export default function App() {
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Could not sync your profile');
       }).catch((error) => {
-        setWatchError(error instanceof Error ? error.message : 'Could not sync your profile');
+        setProfileSyncError(error instanceof Error ? error.message : 'Could not sync your profile');
       });
     }, 700);
 
@@ -215,38 +210,12 @@ export default function App() {
     );
   }
 
-  // Handle Local File Uploads from PC
-  const handleCoverFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setNewMovie((current) => ({
-        ...current,
-        cover: URL.createObjectURL(file),
-        coverBlob: file,
-      }));
-    }
-  };
-
-  const handleVideoFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setNewMovie((current) => ({
-        ...current,
-        videoUrl: URL.createObjectURL(file),
-        videoBlob: file,
-      }));
-    }
-  };
-
   // Filter Logic
   const movieCategories = [...new Set(
     movies.flatMap((movie) => (movie.category || '').split(/[,\u002f]/).map((category) => category.trim()).filter(Boolean))
   )].sort((first, second) => first.localeCompare(second));
   const filteredMovies = movies.filter(m => {
-    const matchesFilter = filter === 'all' ? true
-      : filter === 'free' ? !m.isPaid
-        : filter === 'paid' ? m.isPaid
-          : favorites.includes(m.id);
+    const matchesFilter = filter === 'all' || favorites.includes(m.id);
     const matchesCategory = categoryFilter === 'all' || (m.category || '')
       .split(/[,\u002f]/)
       .some((category) => category.trim().toLowerCase() === categoryFilter.toLowerCase());
@@ -261,48 +230,23 @@ export default function App() {
       : [...current, movieId]);
   };
 
-  const updateWatchProgress = (movieId, currentTime, duration) => {
-    if (!Number.isFinite(currentTime) || !Number.isFinite(duration) || duration <= 0) return;
-    const progress = {
-      movieId,
-      currentTime: Math.min(currentTime, duration),
-      duration,
-      updatedAt: new Date().toISOString(),
-    };
-    setWatchProgress((current) => [progress, ...current.filter((item) => item.movieId !== movieId)].slice(0, 100));
+  // Open the poster details before starting the purchase flow.
+  const handleMovieDetails = (movie) => {
+    setDetailsMovie(movie);
   };
 
-  const clearWatchProgress = (movieId) => {
-    setWatchProgress((current) => current.filter((item) => item.movieId !== movieId));
-  };
-
-  // Click Play Handler
-  const handlePlayMovie = (movie) => {
-    const hasAccess = !movie.isPaid || (currentUser && (isVipUser || unlockedMovieIds.includes(movie.id)));
-    if (hasAccess) {
-      setSelectedMovie(movie);
-      setDetailsMovie(null);
-      setWatchError('');
-      setActiveTab('watch');
-      if (currentUser) {
-        fetch('/api/analytics/view', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ movieId: movie.id }),
-        }).then((response) => {
-          if (!response.ok) throw new Error('Could not record this view.');
-        }).catch((error) => {
-          setWatchError(error instanceof Error ? error.message : 'Could not record this view.');
-        });
-      }
-    } else if (!currentUser) {
-      setPendingMovie(movie);
+  const beginMoviePurchase = (movie) => {
+    setPendingMovie(movie);
+    setTelegramNoticeError('');
+    setPaymentStatusMessage('');
+    setTelegramUsername('');
+    setDetailsMovie(null);
+    if (!currentUser) {
       setCheckoutAfterAuth(true);
       setAuthMode('login');
       setAuthError('');
       setShowAuthModal(true);
     } else {
-      setPendingMovie(movie);
       setPayStep(1);
       setShowPayModal(true);
     }
@@ -373,8 +317,6 @@ export default function App() {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
     hasAuthenticatedAccount.current = false;
     setCurrentUser(null);
-    setIsVipUser(false);
-    setUnlockedMovieIds([]);
     setFavorites([]);
     setWatchProgress([]);
     setPaymentOrder(null);
@@ -394,14 +336,14 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          item: pendingMovie ? pendingMovie.title : 'VIP Monthly Pass',
-          amount: pendingMovie ? pendingMovie.price : '$4.99',
-          movieId: pendingMovie?.id ?? null,
+          movieId: pendingMovie?.id,
+          telegramUsername,
         }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not create order');
       setPaymentOrder(result);
+      setTelegramUsername(result.telegramUsername);
       setPaymentStatusMessage(result.notificationSent ? '' : 'សំណើត្រូវបានរក្សាទុក ប៉ុន្តែមិនអាចផ្ញើដំណឹង Telegram បានទេ។');
       setPayStep(2);
     } catch (error) {
@@ -418,18 +360,14 @@ export default function App() {
       const response = await fetch(`/api/payment-status?${query}`);
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not check order');
-      setPaymentOrder((current) => ({ ...current, status: result.status }));
+      setPaymentOrder((current) => ({ ...current, status: result.status, deliveryStatus: result.deliveryStatus }));
       if (result.status === 'approved') {
-        if (paymentOrder.movieId !== null && paymentOrder.movieId !== undefined) {
-          setUnlockedMovieIds((current) => current.includes(paymentOrder.movieId) ? current : [...current, paymentOrder.movieId]);
-        }
-        else setIsVipUser(true);
         setPayStep(3);
       } else {
         setPaymentStatusMessage('សំណើនៅកំពុងរង់ចាំ Admin ពិនិត្យប្រាក់ចូល ABA។');
       }
-    } catch {
-      setPaymentStatusMessage('មិនអាចពិនិត្យស្ថានភាពបានទេ។ សូមសាកម្ដងទៀត។');
+    } catch (error) {
+      setPaymentStatusMessage(error instanceof Error ? error.message : 'មិនអាចពិនិត្យស្ថានភាពបានទេ។ សូមសាកម្ដងទៀត។');
     }
   };
 
@@ -437,15 +375,18 @@ export default function App() {
     setAdminOrderError('');
     try {
       const headers = { 'x-admin-password': adminPassword };
-      const [ordersResponse, analyticsResponse] = await Promise.all([
+      const [ordersResponse, analyticsResponse, moviesResponse] = await Promise.all([
         fetch('/api/admin/orders', { headers }),
         fetch('/api/admin/analytics', { headers }),
+        fetch('/api/movies'),
       ]);
-      const [orders, summary] = await Promise.all([ordersResponse.json(), analyticsResponse.json()]);
+      const [orders, summary, catalog] = await Promise.all([ordersResponse.json(), analyticsResponse.json(), moviesResponse.json()]);
       if (!ordersResponse.ok) throw new Error(orders.error || 'Could not load orders');
       if (!analyticsResponse.ok) throw new Error(summary.error || 'Could not load analytics');
+      if (!moviesResponse.ok || !Array.isArray(catalog)) throw new Error(catalog.error || 'Could not load the shared movie catalog');
       setPaymentOrders(orders);
       setAnalytics(summary);
+      setMovies(catalog);
       setIsAdminAuthenticated(true);
     } catch (error) {
       setIsAdminAuthenticated(false);
@@ -465,7 +406,7 @@ export default function App() {
   };
 
   const approvePaymentOrder = async (orderId) => {
-    if (!window.confirm('តើអ្នកបានឃើញប្រាក់ចូលក្នុង ABA ពិតប្រាកដហើយឬនៅ? ចុច OK ដើម្បីអនុម័ត និងដោះសោរឿងឲ្យអតិថិជន។')) return;
+    if (!window.confirm('តើអ្នកបានឃើញប្រាក់ចូលក្នុង ABA ពិតប្រាកដហើយឬនៅ? ចុច OK ដើម្បីបញ្ជាក់ការទូទាត់។')) return;
     setAdminOrderError('');
     try {
       const response = await fetch(`/api/admin/orders/${orderId}/approve`, {
@@ -475,31 +416,33 @@ export default function App() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not approve order');
       setPaymentOrders((orders) => orders.map((order) => order.id === orderId ? { ...order, status: 'approved' } : order));
-      const approvedOrder = paymentOrders.find((order) => order.id === orderId);
-      if (approvedOrder && currentUser?.email?.toLowerCase() === approvedOrder.customerEmail?.toLowerCase()) {
-        if (approvedOrder.movieId == null) setIsVipUser(true);
-        else setUnlockedMovieIds((ids) => ids.includes(approvedOrder.movieId) ? ids : [...ids, approvedOrder.movieId]);
-        setPaymentOrder((current) => current?.orderId === orderId ? { ...current, status: 'approved' } : current);
-      }
+      setPaymentOrder((current) => current?.orderId === orderId ? { ...current, status: 'approved' } : current);
     } catch (error) {
       setAdminOrderError(error instanceof Error ? error.message : 'Could not approve order');
     }
   };
 
-  const refreshCustomerAccess = async () => {
-    setCustomerAccessMessage('');
+  const markOrderDelivered = async (orderId) => {
+    if (!window.confirm('តើអ្នកបានផ្ញើភាពយន្តទៅ Telegram របស់អតិថិជនរួចហើយឬនៅ?')) return;
+    setAdminOrderError('');
     try {
-      const account = await refreshAccount();
-      if (!account.user) throw new Error('សូមចូលគណនីអតិថិជនមុនសិន។');
-      setCustomerAccessMessage('បានធ្វើបច្ចុប្បន្នភាពសិទ្ធិគណនីរួចហើយ។ សាកចុចរឿងម្តងទៀត។');
+      const response = await fetch(`/api/admin/orders/${orderId}/delivered`, {
+        method: 'POST',
+        headers: { 'x-admin-password': adminPassword },
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not mark the movie as sent.');
+      setPaymentOrders((orders) => orders.map((order) => order.id === orderId ? { ...order, deliveryStatus: 'sent', deliveredAt: new Date().toISOString() } : order));
+      setPaymentOrder((current) => current?.orderId === orderId ? { ...current, deliveryStatus: 'sent' } : current);
     } catch (error) {
-      setCustomerAccessMessage(error instanceof Error ? error.message : 'មិនអាចធ្វើបច្ចុប្បន្នភាពសិទ្ធិបានទេ។');
+      setAdminOrderError(error instanceof Error ? error.message : 'Could not mark the movie as sent.');
     }
   };
 
   const resetMovieForm = () => {
     setEditingMovieId(null);
-    setNewMovie({ title: '', category: 'Action', isPaid: false, price: '$1.00', duration: '1h 00m', cover: '', videoUrl: '', description: '' });
+    setMovieFormError('');
+    setNewMovie({ title: '', category: 'Action', isPaid: true, price: '$1.00', duration: '1h 00m', cover: '', description: '' });
   };
 
   const startEditingMovie = (movie) => {
@@ -507,62 +450,72 @@ export default function App() {
     setNewMovie({
       title: movie.title || '',
       category: movie.category || 'Action',
-      isPaid: Boolean(movie.isPaid),
+      isPaid: true,
       price: movie.price && movie.price !== 'FREE' ? movie.price : '$1.00',
       duration: movie.duration || '1h 00m',
       cover: movie.cover || '',
-      coverBlob: movie.coverBlob || null,
-      videoUrl: movie.videoUrl || '',
-      videoBlob: movie.videoBlob || null,
       description: movie.description || '',
     });
   };
 
-  // Add or update a movie (Admin)
-  const handleAddMovie = (e) => {
+  const saveMovieToServer = async (movie, id = null) => {
+    const payload = {
+      title: movie.title,
+      category: movie.category,
+      isPaid: true,
+      price: movie.price,
+      duration: movie.duration,
+      cover: movie.cover,
+      description: movie.description,
+    };
+    const response = await fetch(id === null ? '/api/admin/movies' : `/api/admin/movies/${id}`, {
+      method: id === null ? 'POST' : 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPassword },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not save the movie to the shared catalog.');
+    return result;
+  };
+
+  const refreshMovieCatalog = async () => {
+    const response = await fetch('/api/movies');
+    const result = await response.json();
+    if (!response.ok || !Array.isArray(result)) throw new Error(result.error || 'Could not refresh the shared movie catalog.');
+    setMovies(result);
+    setMovieCatalogError('');
+  };
+
+  const handleAddMovie = async (e) => {
     e.preventDefault();
-    if (!newMovie.title || !newMovie.videoUrl || !newMovie.cover) return alert("សូមបំពេញចំណងជើង បញ្ចូលវីដេអូ និងរូប Poster ពិតរបស់ភាពយន្ត!");
-    if (editingMovieId !== null) {
-      setMovies((currentMovies) => currentMovies.map((movie) => movie.id === editingMovieId ? {
-        ...movie,
-        ...newMovie,
-        id: movie.id,
-        price: newMovie.isPaid ? (newMovie.price || '$1.00') : 'FREE',
-        cover: newMovie.cover || movie.cover || 'https://images.unsplash.com/photo-1485846234645-a62644f84728?w=800&q=80',
-        videoUrl: newMovie.videoUrl || movie.videoUrl,
-      } : movie));
-      if (selectedMovie?.id === editingMovieId) setSelectedMovie((movie) => ({ ...movie, ...newMovie }));
-    } else {
-      const created = {
-        ...newMovie,
-        id: Date.now(),
-        rating: '',
-        views: '0',
-        price: newMovie.isPaid ? (newMovie.price || '$1.00') : 'FREE',
-        cover: newMovie.cover,
-      };
-      setMovies((currentMovies) => [created, ...currentMovies]);
+    if (!newMovie.title || !newMovie.cover || !newMovie.price) {
+      setMovieFormError("សូមបំពេញចំណងជើង តម្លៃ និងតំណរូប Poster ដែលអាចមើលបានសាធារណៈ!");
+      return;
     }
-    resetMovieForm();
-  };
-
-  // Toggle Free/Paid Status (Admin)
-  const togglePaidStatus = (id) => {
-    setMovies(movies.map(m => m.id === id ? { ...m, isPaid: !m.isPaid, price: !m.isPaid ? "$1.99" : "FREE" } : m));
-  };
-
-  // Delete Movie (Admin)
-  const deleteMovie = (id) => {
-    if (confirm("តើអ្នកប្រាកដថានឹងលុបរឿងនេះ?")) {
-      setMovies(movies.filter(m => m.id !== id));
+    setIsSavingMovie(true);
+    setMovieFormError('');
+    try {
+      await saveMovieToServer(newMovie, editingMovieId);
+      await refreshMovieCatalog();
+      resetMovieForm();
+    } catch (error) {
+      setMovieFormError(error instanceof Error ? error.message : 'Could not save the movie.');
+    } finally {
+      setIsSavingMovie(false);
     }
   };
 
-  const continueWatching = watchProgress
-    .filter((progress) => progress.currentTime > 0 && progress.duration > progress.currentTime + 30)
-    .map((progress) => ({ ...progress, movie: movies.find((movie) => movie.id === progress.movieId) }))
-    .filter((progress) => progress.movie)
-    .sort((first, second) => new Date(second.updatedAt).getTime() - new Date(first.updatedAt).getTime());
+  const deleteMovie = async (id) => {
+    if (!confirm("តើអ្នកប្រាកដថានឹងលុបរឿងនេះ?")) return;
+    try {
+      const response = await fetch(`/api/admin/movies/${id}`, { method: 'DELETE', headers: { 'x-admin-password': adminPassword } });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not delete the movie.');
+      await refreshMovieCatalog();
+    } catch (error) {
+      setMovieFormError(error instanceof Error ? error.message : 'Could not delete the movie.');
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
@@ -614,29 +567,13 @@ export default function App() {
               <button type="button" onClick={() => { setAuthMode('login'); setCheckoutAfterAuth(false); setShowAuthModal(true); }} className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">ចូលគណនី</button>
             )}
             <button type="button" onClick={() => setActiveTab('customer')} className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${activeTab === 'customer' ? 'border-emerald-400 bg-emerald-600 text-white' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'}`}>អតិថិជន · CUSTOMER</button>
-            {paymentOrder?.status === 'pending' && (
+            {paymentOrder && (
               <button type="button" onClick={() => {
-                setPendingMovie(paymentOrder.movieId == null ? null : movies.find((movie) => movie.id === paymentOrder.movieId) || null);
-                setPayStep(2);
+                setPendingMovie(movies.find((movie) => movie.id === paymentOrder.movieId) || null);
+                setPayStep(paymentOrder.status === 'approved' ? 3 : 2);
                 setShowPayModal(true);
               }} className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-bold text-amber-300">
-                Check payment
-              </button>
-            )}
-            {isVipUser ? (
-              <span className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/20 border border-amber-500/40 text-amber-400 text-xs font-semibold rounded-full">
-                <Crown className="w-3.5 h-3.5" /> VIP Member
-              </span>
-            ) : (
-              <button 
-                onClick={() => {
-                  setPendingMovie(null);
-                  if (currentUser) { setPayStep(1); setShowPayModal(true); }
-                  else { setAuthMode('signup'); setCheckoutAfterAuth(true); setShowAuthModal(true); }
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-500 to-red-600 hover:opacity-90 text-white text-xs font-bold rounded-lg shadow-md"
-              >
-                <Crown className="w-3.5 h-3.5" /> ទិញ VIP មើលទាំងអស់
+                ពិនិត្យការទិញ
               </button>
             )}
 
@@ -655,83 +592,21 @@ export default function App() {
 
       {/* MAIN CONTENT AREA */}
       <main className="max-w-7xl mx-auto px-4 py-6">
-        <div className="mb-4 text-xs" role={storageError ? 'alert' : 'status'} aria-live="polite">
+        <div className="mb-4 text-xs" role={storageError || movieCatalogError ? 'alert' : 'status'} aria-live="polite">
           {storageError ? (
             <p className="text-red-400">
               មិនអាចរក្សាទុកទិន្នន័យក្នុង browser បានទេ។ សូមពិនិត្យទំហំផ្ទុក ឬសិទ្ធិ browser រួចសាកល្បងម្ដងទៀត។ ({storageError})
             </p>
+          ) : movieCatalogError ? (
+            <p className="text-red-400">មិនអាចភ្ជាប់ទៅបណ្ណាល័យភាពយន្តរួមបានទេ។ សូម refresh ម្តងទៀត។ ({movieCatalogError})</p>
           ) : (
             <p className="text-slate-500">
-              ការរក្សាទុកដោយស្វ័យប្រវត្តិត្រូវបានបើកក្នុង browser នេះ
+              បណ្ណាល័យភាពយន្តនេះត្រូវបានរក្សាទុកលើ Server សម្រាប់អតិថិជនគ្រប់គ្នា។
             </p>
           )}
-          {watchError && <p className="mt-1 text-amber-300">{watchError}</p>}
+          {profileSyncError && <p className="mt-1 text-amber-300">{profileSyncError}</p>}
         </div>
         
-        {/* VIEW 1: WATCH MOVIE PLAYER */}
-        {activeTab === 'watch' && selectedMovie && (
-          <div className="space-y-6">
-            <button 
-              onClick={() => setActiveTab('home')} 
-              className="flex items-center gap-2 text-slate-400 hover:text-white transition text-sm font-medium"
-            >
-              <ArrowLeft className="w-4 h-4" /> ត្រឡប់ទៅទំព័រដើម
-            </button>
-
-            {/* Video Player Box */}
-            <div className="bg-black rounded-2xl overflow-hidden shadow-2xl border border-slate-800 aspect-video relative">
-              <video 
-                src={selectedMovie.videoUrl} 
-                controls 
-                autoPlay
-                className="w-full h-full object-contain"
-                poster={selectedMovie.cover}
-                onLoadedMetadata={(event) => {
-                  const saved = watchProgress.find((item) => item.movieId === selectedMovie.id);
-                  if (saved && saved.currentTime > 10 && saved.currentTime < event.currentTarget.duration - 30) {
-                    event.currentTarget.currentTime = saved.currentTime;
-                  }
-                }}
-                onTimeUpdate={(event) => {
-                  const { currentTime, duration } = event.currentTarget;
-                  const saved = watchProgress.find((item) => item.movieId === selectedMovie.id);
-                  if (!saved || Math.abs(currentTime - saved.currentTime) >= 10) {
-                    updateWatchProgress(selectedMovie.id, currentTime, duration);
-                  }
-                }}
-                onPause={(event) => updateWatchProgress(selectedMovie.id, event.currentTarget.currentTime, event.currentTarget.duration)}
-                onEnded={() => clearWatchProgress(selectedMovie.id)}
-              >
-                កម្មវិធីជ្រោយរបស់អ្នកមិនគាំទ្រការចាក់វីដេអូនេះទេ។
-              </video>
-            </div>
-            {watchError && <p className="text-sm text-amber-300" role="status">{watchError}</p>}
-
-            {/* Video Info */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <h1 className="text-2xl font-bold text-white">{selectedMovie.title}</h1>
-                  <p className="text-sm text-slate-400">{selectedMovie.titleEn} • {selectedMovie.category}</p>
-                </div>
-                {(selectedMovie.rating || Number(selectedMovie.views) > 0) && <div className="flex items-center gap-3">
-                  {Number(selectedMovie.views) > 0 && <span className="px-3 py-1 bg-slate-800 text-slate-300 rounded-lg text-xs">ទស្សនា: {selectedMovie.views} ដង</span>}
-                  {selectedMovie.rating && <span className="px-3 py-1 bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded-lg text-xs font-semibold">⭐ {selectedMovie.rating}</span>}
-                </div>}
-              </div>
-              <p className="text-slate-300 text-sm leading-relaxed border-t border-slate-800/80 pt-4">
-                {selectedMovie.description}
-              </p>
-              <div className="flex flex-wrap gap-3 border-t border-slate-800/80 pt-4">
-                <button type="button" onClick={() => toggleFavorite(selectedMovie.id)} className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:border-pink-500/50">
-                  <Heart className={`h-4 w-4 ${favorites.includes(selectedMovie.id) ? 'fill-pink-500 text-pink-500' : ''}`} />
-                  {favorites.includes(selectedMovie.id) ? 'បានរក្សាទុកក្នុងបញ្ជីចង់មើល' : 'បន្ថែមទៅបញ្ជីចង់មើល'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* CUSTOMER DASHBOARD: account, access, payment status, and personal library */}
         {activeTab === 'customer' && (
           <div className="space-y-6">
@@ -743,52 +618,24 @@ export default function App() {
                     <h2 className="mt-2 text-2xl font-black text-white">សួស្តី {currentUser.name}</h2>
                     <p className="mt-2 text-sm text-slate-400">គណនីអតិថិជន · {currentUser.email}</p>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={refreshCustomerAccess} className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/20">ធ្វើបច្ចុប្បន្នភាពសិទ្ធិ</button>
-                    <button type="button" onClick={() => setActiveTab('home')} className="rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700">Browse movies</button>
-                  </div>
+                  <button type="button" onClick={() => setActiveTab('home')} className="rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700">Browse movies</button>
                 </div>
-                <div className="mt-6 grid gap-3 sm:grid-cols-3">
-                  <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs text-slate-400">Account status</p><p className={`mt-1 font-bold ${isVipUser ? 'text-amber-300' : 'text-emerald-300'}`}>{isVipUser ? 'VIP Active' : 'Customer'}</p></div>
-                  <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs text-slate-400">Unlocked VIP movies</p><p className="mt-1 font-bold text-white">{isVipUser ? 'VIP access' : `${unlockedMovieIds.length} movies`}</p></div>
-                  <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs text-slate-400">Latest payment request</p><p className={`mt-1 font-bold ${paymentOrder?.status === 'pending' ? 'text-amber-300' : paymentOrder?.status === 'approved' ? 'text-emerald-300' : 'text-slate-300'}`}>{paymentOrder?.status === 'pending' ? 'Pending review' : paymentOrder?.status === 'approved' ? 'Approved' : 'No requests'}</p></div>
+                <div className="mt-6 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs text-slate-400">ការទិញចុងក្រោយ</p><p className="mt-1 font-bold text-white">{paymentOrder?.item || 'មិនទាន់មាន'}</p></div>
+                  <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs text-slate-400">ស្ថានភាព</p><p className={`mt-1 font-bold ${paymentOrder?.deliveryStatus === 'sent' ? 'text-emerald-300' : paymentOrder?.status === 'approved' ? 'text-amber-300' : paymentOrder?.status === 'pending' ? 'text-amber-300' : 'text-slate-300'}`}>{paymentOrder?.deliveryStatus === 'sent' ? 'បានផ្ញើតាម Telegram' : paymentOrder?.status === 'approved' ? 'បានបញ្ជាក់ប្រាក់ · កំពុងរៀបចំផ្ញើ' : paymentOrder?.status === 'pending' ? 'កំពុងរង់ចាំពិនិត្យប្រាក់' : 'មិនទាន់មានសំណើ'}</p></div>
                 </div>
-                {!isVipUser && <button type="button" onClick={() => { setPendingMovie(null); setPayStep(1); setShowPayModal(true); }} className="mt-5 rounded-xl bg-gradient-to-r from-amber-500 to-red-600 px-5 py-2.5 text-sm font-bold text-white">Get VIP access</button>}
-                {paymentOrder?.status === 'pending' && <button type="button" onClick={() => { setPendingMovie(paymentOrder.movieId == null ? null : movies.find((movie) => movie.id === paymentOrder.movieId) || null); setPayStep(2); setShowPayModal(true); }} className="ml-3 mt-5 rounded-xl border border-amber-500/30 px-5 py-2.5 text-sm font-semibold text-amber-200">Check payment status</button>}
-                {customerAccessMessage && <p className="mt-4 text-sm text-emerald-200" role="status">{customerAccessMessage}</p>}
+                {paymentOrder && <button type="button" onClick={() => { setPendingMovie(movies.find((movie) => movie.id === paymentOrder.movieId) || null); setPayStep(paymentOrder.status === 'approved' ? 3 : 2); setShowPayModal(true); }} className="mt-5 rounded-xl border border-amber-500/30 px-5 py-2.5 text-sm font-semibold text-amber-200">ពិនិត្យស្ថានភាពការទិញ</button>}
               </section>
 
-              <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 md:p-6">
-                <div className="flex items-center justify-between gap-3">
-                  <div><h3 className="text-lg font-bold text-white">My unlocked movies</h3><p className="mt-1 text-sm text-slate-400">ភាពយន្ត VIP ដែលគណនីនេះមានសិទ្ធិមើល</p></div>
-                  <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">{isVipUser ? movies.filter((movie) => movie.isPaid).length : unlockedMovieIds.length} titles</span>
-                </div>
-                {(isVipUser ? movies.filter((movie) => movie.isPaid) : movies.filter((movie) => movie.isPaid && unlockedMovieIds.includes(movie.id))).length > 0 ? (
-                  <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                    {(isVipUser ? movies.filter((movie) => movie.isPaid) : movies.filter((movie) => movie.isPaid && unlockedMovieIds.includes(movie.id))).map((movie) => <button key={movie.id} type="button" onClick={() => handlePlayMovie(movie)} className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950 text-left transition hover:border-emerald-500/50"><img src={movie.cover} alt={movie.title} className="aspect-[3/4] w-full object-cover" /><span className="block truncate p-3 text-sm font-semibold text-white">{movie.title}</span></button>)}
-                  </div>
-                ) : <div className="mt-4 rounded-xl border border-dashed border-slate-700 bg-slate-950/50 p-5 text-sm text-slate-400">មិនទាន់មានរឿង VIP ដែលបានដោះសោទេ។ អ្នកអាចមើលរឿង FREE នៅក្នុងបញ្ជីភាពយន្ត។</div>}
-              </section>
-              <section className="grid gap-5 lg:grid-cols-2">
-                <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-                  <h3 className="text-lg font-bold text-white">បន្តមើល</h3>
-                  {continueWatching.length ? continueWatching.slice(0, 5).map(({ movie, currentTime, duration }) => (
-                    <button key={movie.id} type="button" onClick={() => handlePlayMovie(movie)} className="mt-3 flex w-full items-center gap-3 rounded-xl bg-slate-950 p-3 text-left">
-                      <img src={movie.cover} alt="" className="h-14 w-12 rounded object-cover" />
-                      <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-white">{movie.title}</span><span className="text-xs text-slate-400">{Math.floor((duration - currentTime) / 60)} នាទីនៅសល់</span><span className="mt-1 block h-1 rounded bg-slate-700"><span className="block h-full rounded bg-red-500" style={{ width: `${Math.min(100, currentTime / duration * 100)}%` }} /></span></span>
-                    </button>
-                  )) : <p className="mt-3 text-sm text-slate-400">ប្រវត្តិបន្តមើលនឹងបង្ហាញនៅទីនេះ។</p>}
-                </div>
-                <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-                  <h3 className="text-lg font-bold text-white">បញ្ជីចង់មើល</h3>
+              <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+                <h3 className="text-lg font-bold text-white">បញ្ជីចង់មើល</h3>
                   {movies.filter((movie) => favorites.includes(movie.id)).length ? movies.filter((movie) => favorites.includes(movie.id)).slice(0, 5).map((movie) => (
-                    <button key={movie.id} type="button" onClick={() => handlePlayMovie(movie)} className="mt-3 flex w-full items-center gap-3 rounded-xl bg-slate-950 p-3 text-left">
+                    <button key={movie.id} type="button" onClick={() => handleMovieDetails(movie)} className="mt-3 flex w-full items-center gap-3 rounded-xl bg-slate-950 p-3 text-left">
                       <img src={movie.cover} alt="" className="h-14 w-12 rounded object-cover" />
                       <span className="min-w-0 flex-1 truncate text-sm font-semibold text-white">{movie.title}</span>
                       <Heart className="h-4 w-4 fill-pink-500 text-pink-500" />
                     </button>
                   )) : <p className="mt-3 text-sm text-slate-400">ចុចរូបបេះដូងលើភាពយន្ត ដើម្បីរក្សាទុកក្នុងបញ្ជីនេះ។</p>}
-                </div>
               </section>
             </> : <section className="mx-auto max-w-xl rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center"><h2 className="text-xl font-bold text-white">Customer dashboard</h2><p className="mt-2 text-sm text-slate-400">សូមចូលគណនីអតិថិជន ដើម្បីមើលព័ត៌មាន និងសិទ្ធិរបស់អ្នក។</p><button type="button" onClick={() => { setAuthMode('login'); setShowAuthModal(true); }} className="mt-5 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white">Sign in</button></section>}
           </div>
@@ -801,49 +648,21 @@ export default function App() {
             <div className="relative rounded-3xl overflow-hidden bg-gradient-to-r from-red-950 via-slate-900 to-slate-950 border border-slate-800 p-8 md:p-12 shadow-2xl">
               <div className="relative z-10 max-w-xl space-y-4">
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-red-600/30 border border-red-500/40 text-red-400 text-xs font-semibold rounded-full">
-                  🔥 AI Generated Kh-Dubbed
+                  🎬 បណ្ណាល័យភាពយន្ត
                 </span>
                 <h2 className="text-3xl md:text-5xl font-black text-white leading-tight">
-                  ទស្សនាភាពយន្ត AI ភាសាខ្មែរដំបូងគេ
+                  ជ្រើសរើសរឿងដែលអ្នកចាប់អារម្មណ៍
                 </h2>
                 <p className="text-slate-300 text-sm md:text-base leading-relaxed">
-                  សម្រិតសម្រាំងរឿងភាគ និងភាពយន្ត AI គុណភាពខ្ពស់ និយាយភាសាខ្មែរយ៉ាងរលូន។ មានទាំងជម្រើសទស្សនា **FREE** និង **VIP Exclusive**!
+                  មើល Poster និងព័ត៌មានរឿង បង់ប្រាក់តាម ABA បន្ទាប់មកយើងផ្ញើភាពយន្តទៅ Telegram របស់អ្នកដោយផ្ទាល់។
                 </p>
                 <div className="pt-2 flex flex-wrap gap-3">
-                  <button 
-                    onClick={() => setFilter('free')}
-                    className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-sm font-semibold transition"
-                  >
-                    មើលរឿង FREE
-                  </button>
-                  <button 
-                    onClick={() => setFilter('paid')}
-                    className="px-5 py-2.5 bg-gradient-to-r from-red-600 to-amber-500 hover:opacity-90 text-white rounded-xl text-sm font-semibold shadow-lg shadow-red-900/40 transition"
-                  >
-                    រឿង VIP/បង់លុយ
+                  <button onClick={() => document.getElementById('movie-catalog')?.scrollIntoView({ behavior: 'smooth' })} className="px-5 py-2.5 bg-gradient-to-r from-red-600 to-amber-500 hover:opacity-90 text-white rounded-xl text-sm font-semibold shadow-lg shadow-red-900/40 transition">
+                    ជ្រើសរើសភាពយន្ត
                   </button>
                 </div>
               </div>
             </div>
-
-            {continueWatching.length > 0 && filter === 'all' && (
-              <section className="space-y-4">
-                <div>
-                  <h3 className="flex items-center gap-2 text-lg font-bold text-white"><Clock3 className="h-5 w-5 text-amber-400" /> បន្តមើល</h3>
-                  <p className="mt-1 text-xs text-slate-400">បន្តពីកន្លែងដែលអ្នកបានឈប់មើលលើគណនី ឬ browser នេះ</p>
-                </div>
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
-                  {continueWatching.slice(0, 4).map(({ movie, currentTime, duration }) => (
-                    <button key={movie.id} type="button" onClick={() => handlePlayMovie(movie)} className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900 text-left hover:border-amber-500/50">
-                      <img src={movie.cover} alt={movie.title} className="aspect-video w-full object-cover" />
-                      <span className="block truncate px-3 pt-3 text-sm font-semibold text-white">{movie.title}</span>
-                      <span className="block px-3 pb-2 text-xs text-slate-400">នៅសល់ {Math.floor((duration - currentTime) / 60)} នាទី</span>
-                      <span className="block h-1 bg-slate-700"><span className="block h-full bg-red-500" style={{ width: `${Math.min(100, (currentTime / duration) * 100)}%` }} /></span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            )}
 
             {movies.length > 0 && <>
             {/* Filter Buttons */}
@@ -851,8 +670,6 @@ export default function App() {
               <div className="flex gap-2">
                 {[
                   { key: 'all', label: 'ទាំងអស់' },
-                  { key: 'free', label: 'មើល Free' },
-                  { key: 'paid', label: 'រឿង បង់លុយ (VIP)' },
                   { key: 'favorites', label: 'បញ្ជីចង់មើល' }
                 ].map((tab) => (
                   <button
@@ -910,12 +727,12 @@ export default function App() {
             </>}
 
             {/* Movie Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 md:gap-6">
+            <div id="movie-catalog" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 md:gap-6">
               {filteredMovies.map((movie) => {
                 return (
                   <div 
                     key={movie.id}
-                    onClick={() => handlePlayMovie(movie)}
+                    onClick={() => handleMovieDetails(movie)}
                     className="group bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 hover:border-red-500/50 transition-all duration-300 hover:shadow-xl hover:shadow-red-900/10 cursor-pointer flex flex-col"
                   >
                     {/* Poster Cover */}
@@ -927,17 +744,10 @@ export default function App() {
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-black/30" />
 
-                      {/* Free / Paid Badge */}
                       <div className="absolute top-3 left-3">
-                        {movie.isPaid ? (
-                          <span className="flex items-center gap-1 px-2.5 py-1 bg-amber-500 text-slate-950 text-[10px] font-extrabold rounded-lg shadow">
-                            <Lock className="w-3 h-3" /> VIP ({movie.price})
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500 text-slate-950 text-[10px] font-extrabold rounded-lg shadow">
-                            <Unlock className="w-3 h-3" /> FREE
-                          </span>
-                        )}
+                        <span className="flex items-center gap-1 px-2.5 py-1 bg-amber-500 text-slate-950 text-[10px] font-extrabold rounded-lg shadow">
+                          <Lock className="w-3 h-3" /> {movie.price}
+                        </span>
                       </div>
                       <div className="absolute right-3 top-3 flex gap-2">
                         <button type="button" onClick={(event) => { event.stopPropagation(); toggleFavorite(movie.id); }} aria-label={favorites.includes(movie.id) ? `Remove ${movie.title} from watchlist` : `Add ${movie.title} to watchlist`} className="rounded-full bg-slate-950/80 p-2 text-white hover:bg-pink-600">
@@ -948,10 +758,10 @@ export default function App() {
                         </button>
                       </div>
 
-                      {/* Hover Play Button */}
+                      {/* Hover details cue */}
                       <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/40 backdrop-blur-xs transition">
                         <div className="p-4 bg-red-600 rounded-full text-white shadow-lg transform group-hover:scale-110 transition">
-                          <Play className="w-6 h-6 fill-white" />
+                          <Info className="w-6 h-6" />
                         </div>
                       </div>
 
@@ -969,12 +779,6 @@ export default function App() {
                         </h3>
                         <p className="mt-1 break-words text-[11px] text-slate-400">{movie.category}</p>
                       </div>
-                      {watchProgress.find((item) => item.movieId === movie.id && item.duration > 0) && (
-                        <span className="block h-1 overflow-hidden rounded bg-slate-700">
-                          <span className="block h-full bg-red-500" style={{ width: `${Math.min(100, (watchProgress.find((item) => item.movieId === movie.id).currentTime / watchProgress.find((item) => item.movieId === movie.id).duration) * 100)}%` }} />
-                        </span>
-                      )}
-
                       {(movie.rating || Number(movie.views) > 0) && <div className="flex items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-slate-800/60">
                         {movie.rating && <span>⭐ {movie.rating}</span>}
                         {Number(movie.views) > 0 && <span>{movie.views} views</span>}
@@ -991,7 +795,7 @@ export default function App() {
                 </h3>
                 <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-400">
                   {movies.length === 0
-                    ? 'ភាពយន្តនឹងបង្ហាញនៅទីនេះ បន្ទាប់ពីអ្នកគ្រប់គ្រងបង្ហោះវីដេអូដែលមានសិទ្ធិចែករំលែក។'
+                    ? 'បណ្ណាល័យ Poster នឹងបង្ហាញភាពយន្តដែលអ្នកគ្រប់គ្រងបានបន្ថែម។'
                     : filter === 'favorites'
                       ? 'ចុចរូបបេះដូងលើភាពយន្ត ដើម្បីរក្សាទុកក្នុងបញ្ជីចង់មើល។'
                       : 'សាកកែពាក្យស្វែងរក ឬជ្រើសប្រភេទផ្សេង។'}
@@ -1014,7 +818,7 @@ export default function App() {
                 <Shield className="w-8 h-8 text-red-500" />
                 <div>
                 <h2 className="text-xl font-bold text-white">ផ្ទាំងអ្នកគ្រប់គ្រង · ADMIN DASHBOARD</h2>
-                  <p className="text-xs text-slate-400">គ្រប់គ្រងរឿង AI កំណត់រឿង Free ឬបង់លុយ និងបន្ថែមរឿងថ្មីៗ</p>
+                  <p className="text-xs text-slate-400">គ្រប់គ្រង Poster តម្លៃ និងការបញ្ជាទិញតាម Telegram</p>
                 </div>
               </div>
               <button 
@@ -1045,7 +849,7 @@ export default function App() {
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
                 <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-4"><p className="text-xs text-slate-400">All movies</p><p className="mt-1 text-2xl font-bold text-white">{movies.length}</p></div>
-                <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4"><p className="text-xs text-slate-400">VIP movies</p><p className="mt-1 text-2xl font-bold text-amber-300">{movies.filter((movie) => movie.isPaid).length}</p></div>
+                <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4"><p className="text-xs text-slate-400">Movies for sale</p><p className="mt-1 text-2xl font-bold text-amber-300">{movies.length}</p></div>
                 <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4"><p className="text-xs text-slate-400">ABA requests awaiting review</p><p className="mt-1 text-2xl font-bold text-emerald-300">{paymentOrders.filter((order) => order.status === 'pending').length}</p></div>
               </div>
               {analytics && <section className="space-y-4 rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
@@ -1065,8 +869,8 @@ export default function App() {
                 </div>
               </section>}
               <div>
-                <h4 className="pb-2 text-sm font-bold text-white">ABA payment requests</h4>
-                <p className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-100">១. បើក ABA របស់អ្នក ហើយផ្ទៀងផ្ទាត់ប្រាក់ចូល និងចំនួនឲ្យត្រូវនឹងសំណើ។ ២. ចុចប៊ូតុងពណ៌បៃតងលើសំណើនោះ ដើម្បីអនុម័ត។ បើប្រាក់មិនទាន់ចូល សូមទុក Pending។</p>
+                <h4 className="pb-2 text-sm font-bold text-white">Movie orders · ABA / Telegram</h4>
+                <p className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-100">១. ពិនិត្យប្រាក់ ABA ហើយចុច “បញ្ជាក់ប្រាក់”។ ២. ផ្ញើភាពយន្តទៅ Telegram username របស់អតិថិជនដោយដៃ។ ៣. បន្ទាប់មកចុច “បានផ្ញើ”។</p>
                 {adminOrderError && <p className="mb-3 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300" role="alert">{adminOrderError}</p>}
                 {paymentOrders.length > 0 ? <div className="divide-y divide-slate-800 rounded-xl border border-slate-800 px-3">
                   {paymentOrders.map((order) => (
@@ -1074,9 +878,19 @@ export default function App() {
                       <div className="min-w-0 text-sm">
                         <p className="font-semibold text-white">{order.item} · {order.amount}</p>
                         <p className="text-slate-400">Customer: {order.customerName} · {order.customerEmail}</p>
+                        <p className="text-sky-300">Telegram: {order.telegramUsername || 'Not provided'}</p>
                         <p className="break-all text-xs text-slate-500">Order {order.id} · Code {order.claimCode} · {new Date(order.createdAt).toLocaleString()}</p>
                       </div>
-                      {order.status === 'pending' ? <button type="button" onClick={() => approvePaymentOrder(order.id)} className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-500">ប្រាក់ចូល ABA ហើយ · អនុម័ត</button> : <span className="shrink-0 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold text-emerald-300">បានអនុម័ត</span>}
+                      <div className="flex shrink-0 flex-col gap-2">
+                        {order.status === 'pending'
+                          ? <button type="button" onClick={() => approvePaymentOrder(order.id)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-500">បញ្ជាក់ប្រាក់ ABA</button>
+                          : <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-center text-xs font-semibold text-emerald-300">បានបញ្ជាក់ប្រាក់</span>}
+                        {order.status === 'approved' && order.deliveryStatus !== 'sent'
+                          ? <button type="button" onClick={() => markOrderDelivered(order.id)} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white hover:bg-sky-500">បានផ្ញើតាម Telegram</button>
+                          : order.deliveryStatus === 'sent'
+                            ? <span className="rounded-full bg-sky-500/15 px-3 py-1 text-center text-xs font-semibold text-sky-300">បានផ្ញើរួច</span>
+                            : null}
+                      </div>
                     </div>
                   ))}
                 </div> : <p className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 text-sm text-slate-400">No ABA payment requests yet.</p>}
@@ -1117,17 +931,6 @@ export default function App() {
                         <option>Fantasy</option>
                       </select>
                     </div>
-                    <div>
-                      <label className="block text-slate-400 mb-1">រៀបចំសិទ្ធិមើល</label>
-                      <select 
-                        value={newMovie.isPaid ? 'paid' : 'free'}
-                        onChange={e => setNewMovie({...newMovie, isPaid: e.target.value === 'paid'})}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white"
-                      >
-                        <option value="free">មើល FREE</option>
-                        <option value="paid">ត្រូវបង់លុយ (VIP)</option>
-                      </select>
-                    </div>
                   </div>
 
                   <div>
@@ -1141,34 +944,27 @@ export default function App() {
                     />
                   </div>
 
-                  {newMovie.isPaid && (
-                    <div>
-                      <label className="block text-slate-400 mb-1">តម្លៃ ($)</label>
-                      <input 
-                        type="text" 
-                        value={newMovie.price}
-                        onChange={e => setNewMovie({...newMovie, price: e.target.value})}
-                        placeholder="$1.99"
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white"
-                      />
-                    </div>
-                  )}
-
-                  {/* Cover Input + File Upload Option */}
                   <div>
-                    <label className="block text-slate-400 mb-1">Cover Image (តំណរូបភាព ឬជ្រើសរើស File)</label>
+                    <label className="block text-slate-400 mb-1">តម្លៃលក់ ($)</label>
+                    <input
+                      type="text"
+                      required
+                      value={newMovie.price}
+                      onChange={e => setNewMovie({...newMovie, price: e.target.value})}
+                      placeholder="$1.99"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 mb-1">តំណ Poster សាធារណៈ (HTTPS)</label>
                     <input 
                       type="url" 
+                      required
                       value={newMovie.cover}
-                      onChange={e => setNewMovie({...newMovie, cover: e.target.value, coverBlob: null})}
+                      onChange={e => setNewMovie({...newMovie, cover: e.target.value})}
                       placeholder="https://..."
                       className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white mb-1.5"
-                    />
-                    <input 
-                      type="file" 
-                      accept="image/*"
-                      onChange={handleCoverFileUpload}
-                      className="w-full text-slate-400 text-[11px] file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:bg-amber-500 file:text-slate-950 hover:file:bg-amber-400 cursor-pointer"
                     />
                     {newMovie.cover && (
                       <div className="mt-3 flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950 p-2">
@@ -1176,24 +972,6 @@ export default function App() {
                         <span className="text-[11px] text-slate-400">Thumbnail preview — រូបនេះនឹងបង្ហាញលើកាតរឿង</span>
                       </div>
                     )}
-                  </div>
-
-                  {/* Video Input + File Upload Option */}
-                  <div>
-                    <label className="block text-slate-400 mb-1">Video MP4 (តំណវីដេអូ ឬជ្រើសរើស File ពីកុំព្យូទ័រ)</label>
-                    <input 
-                      type="url" 
-                      value={newMovie.videoUrl}
-                      onChange={e => setNewMovie({...newMovie, videoUrl: e.target.value, videoBlob: null})}
-                      placeholder="https://.../video.mp4"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white mb-1.5"
-                    />
-                    <input 
-                      type="file" 
-                      accept="video/*"
-                      onChange={handleVideoFileUpload}
-                      className="w-full text-slate-400 text-[11px] file:mr-2 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:bg-red-600/80 file:text-white hover:file:bg-red-600 cursor-pointer"
-                    />
                   </div>
 
                   <div>
@@ -1206,11 +984,14 @@ export default function App() {
                     ></textarea>
                   </div>
 
+                  <p className="text-[11px] leading-5 text-slate-400">គេហទំព័ររក្សាទុកតែព័ត៌មានរឿង និងតំណ Poster ប៉ុណ្ណោះ។ វីដេអូមិនត្រូវបានបង្ហោះ ឬរក្សាទុកលើ Server ទេ។</p>
+                  {movieFormError && <p className="text-sm text-red-300" role="alert">{movieFormError}</p>}
                   <button 
                     type="submit"
-                    className="w-full py-2.5 bg-red-600 hover:bg-red-500 font-bold text-white rounded-lg transition"
+                    disabled={isSavingMovie}
+                    className="w-full py-2.5 bg-red-600 hover:bg-red-500 font-bold text-white rounded-lg transition disabled:opacity-50"
                   >
-                    {editingMovieId !== null ? 'រក្សាទុកការកែប្រែ' : 'រក្សាទុក និងបង្ហោះ'}
+                    {isSavingMovie ? 'កំពុងរក្សាទុក…' : editingMovieId !== null ? 'រក្សាទុកការកែប្រែ' : 'បន្ថែម Poster'}
                   </button>
                   {editingMovieId !== null && (
                     <button type="button" onClick={resetMovieForm} className="w-full py-2.5 bg-slate-700 hover:bg-slate-600 font-bold text-white rounded-lg transition">
@@ -1244,19 +1025,6 @@ export default function App() {
                         >
                           <Pencil className="w-4 h-4" />
                         </button>
-                        {/* Toggle Free/Paid Button */}
-                        <button 
-                          onClick={() => togglePaidStatus(m.id)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 ${
-                            m.isPaid 
-                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' 
-                              : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                          }`}
-                        >
-                          {m.isPaid ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
-                          {m.isPaid ? `Paid (${m.price})` : 'Free'}
-                        </button>
-
                         <button 
                           onClick={() => deleteMovie(m.id)}
                           className="p-2 text-slate-400 hover:text-red-400 bg-slate-800 rounded-lg"
@@ -1280,9 +1048,7 @@ export default function App() {
             <button type="button" onClick={() => setDetailsMovie(null)} aria-label="Close movie details" className="absolute right-3 top-3 z-10 rounded-full bg-black/70 px-3 py-1 text-white hover:bg-slate-700">✕</button>
             <img src={detailsMovie.cover} alt={detailsMovie.title} className="h-64 w-full object-cover md:h-full" />
             <div className="space-y-4 p-6">
-              <span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold ${detailsMovie.isPaid ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
-                {detailsMovie.isPaid ? `VIP · ${detailsMovie.price}` : 'FREE'}
-              </span>
+              <span className="inline-flex rounded-full bg-amber-500/15 px-3 py-1 text-xs font-bold text-amber-300">តម្លៃ {detailsMovie.price}</span>
               <div>
                 <h2 id="movie-details-title" className="text-2xl font-bold text-white">{detailsMovie.title}</h2>
                 <p className="mt-1 text-sm text-slate-400">{detailsMovie.titleEn || 'ភាពយន្តខ្មែរ'} · {detailsMovie.category}</p>
@@ -1290,7 +1056,7 @@ export default function App() {
               <div className="flex gap-4 text-sm text-slate-300"><span>⭐ {detailsMovie.rating}</span><span>{detailsMovie.duration}</span><span>{detailsMovie.views} views</span></div>
               <p className="text-sm leading-6 text-slate-300">{detailsMovie.description || 'មិនទាន់មានការពិពណ៌នាសម្រាប់ភាពយន្តនេះទេ។'}</p>
               <div className="flex flex-wrap gap-2 pt-2">
-                <button type="button" onClick={() => handlePlayMovie(detailsMovie)} className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-red-500"><Play className="h-4 w-4" /> មើលរឿង</button>
+                <button type="button" onClick={() => beginMoviePurchase(detailsMovie)} className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-red-500"><Lock className="h-4 w-4" /> ទិញរឿង · {detailsMovie.price}</button>
                 <button type="button" onClick={() => toggleFavorite(detailsMovie.id)} className="inline-flex items-center gap-2 rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:border-pink-500/50">
                   <Heart className={`h-4 w-4 ${favorites.includes(detailsMovie.id) ? 'fill-pink-500 text-pink-500' : ''}`} />
                   {favorites.includes(detailsMovie.id) ? 'ដកចេញពីបញ្ជី' : 'ចង់មើល'}
@@ -1318,33 +1084,44 @@ export default function App() {
                   <Crown className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="text-xl font-bold text-white">
-                    {pendingMovie ? `ទិញមើលរឿង: ${pendingMovie.title}` : "ជាវកញ្ចប់ VIP Member"}
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {pendingMovie ? `តម្លៃត្រឹមតែ ${pendingMovie.price} ដើម្បីមើលរឿងនេះ` : "ទស្សនារឿង AI ទាំងអស់គ្មានដែនកំណត់ត្រឹម $4.99/ខែ"}
-                  </p>
+                  <h3 className="text-xl font-bold text-white">បញ្ជាទិញ៖ {pendingMovie?.title}</h3>
+                  <p className="mt-1 text-xs text-slate-400">បង់ប្រាក់តាម ABA ហើយយើងនឹងផ្ញើរឿងទៅ Telegram របស់អ្នក។</p>
                 </div>
 
                 <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 text-left space-y-2">
                   <div className="flex justify-between text-xs text-slate-300">
-                    <span>ប្រភេទសេវា:</span>
-                    <span className="font-bold">{pendingMovie ? "ទិញរឿងដាច់" : "VIP Monthly Pass"}</span>
+                    <span>ភាពយន្ត:</span>
+                    <span className="font-bold">{pendingMovie?.title}</span>
                   </div>
                   <div className="flex justify-between text-xs text-slate-300">
                     <span>តម្លៃសរុប:</span>
-                    <span className="font-bold text-amber-400">{pendingMovie ? pendingMovie.price : "$4.99"}</span>
+                    <span className="font-bold text-amber-400">{pendingMovie?.price}</span>
                   </div>
                 </div>
 
-                <p className="rounded-lg border border-slate-700 bg-slate-950 p-3 text-left text-xs text-slate-300">Signed in as <span className="font-semibold text-white">{currentUser?.email}</span>. This request will be attached to this account.</p>
+                <label className="block text-left text-xs text-slate-300">
+                  Telegram username សម្រាប់ទទួលរឿង
+                  <input
+                    type="text"
+                    required
+                    autoComplete="off"
+                    maxLength={33}
+                    pattern="@?[A-Za-z0-9_]{5,32}"
+                    value={telegramUsername}
+                    onChange={(event) => setTelegramUsername(event.target.value)}
+                    placeholder="@your_username"
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm text-white outline-none focus:border-sky-500"
+                  />
+                </label>
+                <p className="rounded-lg border border-slate-700 bg-slate-950 p-3 text-left text-xs text-slate-300">គណនី៖ <span className="font-semibold text-white">{currentUser?.email}</span> · សូមប្រាកដថា username ត្រឹមត្រូវ និងអាចស្វែងរកបានក្នុង Telegram។</p>
                 <button 
                   onClick={confirmPayment}
-                  disabled={!currentUser || isCreatingOrder}
+                  disabled={!currentUser || !pendingMovie || !telegramUsername.trim() || isCreatingOrder}
                   className="w-full py-3 bg-gradient-to-r from-red-600 to-amber-500 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 font-bold text-white rounded-xl shadow-lg"
                 >
-                  បង្ហាញ KHQR សម្រាប់ទូទាត់
+                  {isCreatingOrder ? 'កំពុងបង្កើតសំណើ…' : 'បង្កើតសំណើ និងបង់ប្រាក់តាម ABA'}
                 </button>
+                {telegramNoticeError && <p className="text-xs text-red-300" role="alert">{telegramNoticeError}</p>}
               </div>
             )}
 
@@ -1352,16 +1129,15 @@ export default function App() {
               <div className="space-y-4 text-center">
                 <h3 className="text-lg font-bold text-white">ស្កេន KHQR ដើម្បីបង់ប្រាក់</h3>
                 <p className="text-sm text-slate-300">គណនី៖ CHUMCHEAT HAN · ABA</p>
-                {paymentOrder && <div className="rounded-xl border border-slate-700 bg-slate-950 p-3 text-left text-xs text-slate-300"><p>លេខសំណើ៖ <code className="select-all text-amber-300">{paymentOrder.orderId}</code></p><p className="mt-1">កូដសំណើ៖ <code className="select-all text-amber-300">{paymentOrder.claimCode}</code></p><p className="mt-1">សូមរក្សាកូដនេះទុកសម្រាប់ពិនិត្យស្ថានភាព។</p></div>}
+                {paymentOrder && <div className="rounded-xl border border-slate-700 bg-slate-950 p-3 text-left text-xs text-slate-300"><p>រឿង៖ {paymentOrder.item} · {paymentOrder.amount}</p><p className="mt-1">Telegram៖ {paymentOrder.telegramUsername || telegramUsername}</p><p className="mt-1">លេខសំណើ៖ <code className="select-all text-amber-300">{paymentOrder.orderId}</code></p><p className="mt-1">កូដសំណើ៖ <code className="select-all text-amber-300">{paymentOrder.claimCode}</code></p><p className="mt-1">សូមរក្សាកូដនេះទុកសម្រាប់ពិនិត្យស្ថានភាព។</p></div>}
                 <div className="mx-auto w-full max-w-xs rounded-2xl bg-white p-3">
                   <img src="/photo_2026-10-21_08-44-19.jpg" alt="Personal ABA KHQR for CHUMCHEAT HAN" className="block w-full rounded-lg" onLoad={(event) => { event.currentTarget.nextElementSibling.style.display = 'none'; }} onError={(event) => { event.currentTarget.style.display = 'none'; }} />
                   <p className="py-6 text-sm text-slate-700">រកមិនឃើញរូប KHQR ក្នុងថត <code>public</code></p>
                 </div>
-                <p className="text-xs text-slate-400">ចំនួនប្រាក់៖ {pendingMovie ? pendingMovie.price : '$4.99'} · សូមពិនិត្យឈ្មោះអ្នកទទួល CHUMCHEAT HAN មុនបញ្ជាក់។</p>
-                <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">ការបង់ប្រាក់ត្រូវពិនិត្យដោយម្ចាស់គណនី។ កម្មវិធីមិនទាន់អាចផ្ទៀងផ្ទាត់ ឬបើក VIP ដោយស្វ័យប្រវត្តិទេ។</p>
+                <p className="text-xs text-slate-400">ចំនួនប្រាក់៖ {paymentOrder?.amount || pendingMovie?.price} · សូមពិនិត្យឈ្មោះអ្នកទទួល CHUMCHEAT HAN មុនបញ្ជាក់។</p>
+                <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">បន្ទាប់ពីផ្ទៀងផ្ទាត់ប្រាក់រួច ម្ចាស់គេហទំព័រនឹងផ្ញើភាពយន្តទៅ Telegram ដោយដៃ។ មិនមានការចាក់វីដេអូនៅលើគេហទំព័រនេះទេ។</p>
                 {paymentStatusMessage && <p className="text-xs text-amber-200" role="status">{paymentStatusMessage}</p>}
-                <button type="button" onClick={checkPaymentStatus} className="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">ពិនិត្យស្ថានភាព / អនុវត្តការដោះសោ</button>
-                {telegramNoticeError && <p className="text-xs text-red-300" role="alert">{telegramNoticeError}</p>}
+                <button type="button" onClick={checkPaymentStatus} className="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">ពិនិត្យស្ថានភាពការទូទាត់</button>
                 <button type="button" onClick={() => { setShowPayModal(false); setPayStep(1); }} className="w-full rounded-xl bg-slate-700 py-3 font-bold text-white hover:bg-slate-600">បិទ</button>
               </div>
             )}
@@ -1370,14 +1146,11 @@ export default function App() {
               <div className="space-y-5 py-2 text-center">
                 <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/15 text-3xl text-emerald-400">?</div>
                 <div>
-                  <h3 className="text-xl font-bold text-white">Payment approved</h3>
-                  <p className="mt-1 text-xs text-slate-400">The admin verified and approved this payment request.</p>
+                  <h3 className="text-xl font-bold text-white">{paymentOrder?.deliveryStatus === 'sent' ? 'បានផ្ញើរឿងរួចហើយ' : 'បានបញ្ជាក់ការទូទាត់'}</h3>
+                  <p className="mt-1 text-xs text-slate-400">{paymentOrder?.deliveryStatus === 'sent' ? `សូមពិនិត្យ Telegram ${paymentOrder?.telegramUsername || telegramUsername} ដើម្បីទទួលភាពយន្ត។` : `ការទូទាត់បានផ្ទៀងផ្ទាត់ហើយ។ សូមរង់ចាំទទួលរឿងតាម Telegram ${paymentOrder?.telegramUsername || telegramUsername}។`}</p>
                 </div>
-                <button type="button" onClick={() => {
-                  setShowPayModal(false);
-                  const movie = paymentOrder?.movieId == null ? null : movies.find((entry) => entry.id === paymentOrder.movieId);
-                  if (movie) { setSelectedMovie(movie); setActiveTab('watch'); }
-                }} className="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">Start watching</button>
+                <button type="button" onClick={checkPaymentStatus} className="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">ធ្វើបច្ចុប្បន្នភាពស្ថានភាព Telegram</button>
+                <button type="button" onClick={() => setShowPayModal(false)} className="w-full rounded-xl bg-slate-700 py-3 font-bold text-white hover:bg-slate-600">បិទ</button>
               </div>
             )}
 

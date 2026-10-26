@@ -1,8 +1,8 @@
 import { createServer } from 'node:http';
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { promisify } from 'node:util';
 import { mkdirSync } from 'node:fs';
+import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
@@ -24,8 +24,8 @@ const loadLocalEnv = async () => {
   }
 };
 
-const json = (response, status, payload) => {
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+const json = (response, status, payload, headers = {}) => {
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers });
   response.end(payload === undefined ? undefined : JSON.stringify(payload));
 };
 
@@ -47,7 +47,7 @@ const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({
 }[character]));
 
 let database;
-const emptyDb = () => ({ users: [], orders: [], entitlements: [], emailTokens: [], passwordResetTokens: [], magicTokens: [], googleStates: [], sessions: [], movieViews: [] });
+const emptyDb = () => ({ users: [], orders: [], entitlements: [], emailTokens: [], passwordResetTokens: [], magicTokens: [], googleStates: [], sessions: [], movieViews: [], movies: [] });
 const loadDb = async () => {
   const row = database.prepare('SELECT data FROM app_state WHERE id = 1').get();
   return JSON.parse(row.data);
@@ -154,9 +154,39 @@ const getUser = async (request) => {
   return db.users.find((user) => user.id === session.userId) || null;
 };
 
+const validateMovie = (body, current = {}) => {
+  const { videoUrl: _videoUrl, coverBlob: _coverBlob, videoBlob: _videoBlob, ...safeCurrent } = current;
+  const movie = {
+    ...safeCurrent,
+    title: typeof body.title === 'string' ? body.title.trim() : '',
+    category: typeof body.category === 'string' ? body.category.trim() : '',
+    duration: typeof body.duration === 'string' ? body.duration.trim() : '',
+    description: typeof body.description === 'string' ? body.description.trim() : '',
+    cover: typeof body.cover === 'string' ? body.cover.trim() : '',
+    isPaid: true,
+    price: typeof body.price === 'string' ? body.price.trim() : '',
+    rating: current.rating || '',
+    views: current.views || '0',
+  };
+  if (!movie.title || movie.title.length > 160 || !movie.category || movie.category.length > 80
+    || !movie.duration || movie.duration.length > 24 || movie.description.length > 4000
+    || !movie.price || movie.price.length > 32) {
+    throw new Error('Please check the movie title, category, duration, description, and price.');
+  }
+  let parsed;
+  try { parsed = new URL(movie.cover); } catch { throw new Error('Poster must be a publicly accessible image URL.'); }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Poster URL must use HTTP or HTTPS.');
+  return movie;
+};
+
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
   try {
+    if (request.method === 'GET' && url.pathname === '/api/movies') {
+      const db = await loadDb();
+      return json(response, 200, (db.movies || []).map(({ videoUrl: _videoUrl, coverBlob: _coverBlob, videoBlob: _videoBlob, ...movie }) => movie));
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/auth/google') {
       if (!hasGoogleOAuthCredentials()) {
         const appUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:5173';
@@ -463,8 +493,10 @@ const server = createServer(async (request, response) => {
           orderId: latestOrder.id,
           claimCode: latestOrder.claimCode,
           status: latestOrder.status,
+          deliveryStatus: latestOrder.deliveryStatus || 'pending',
           item: latestOrder.item,
           movieId: latestOrder.movieId,
+          telegramUsername: latestOrder.telegramUsername,
         } : null,
       });
     }
@@ -527,27 +559,38 @@ const server = createServer(async (request, response) => {
       const user = await getUser(request);
       if (!user) return json(response, 401, { error: 'Log in before creating a payment request.' });
       const body = await readJson(request);
-      const item = typeof body.item === 'string' ? body.item.trim().slice(0, 120) : '';
-      const amount = typeof body.amount === 'string' ? body.amount.trim().slice(0, 30) : '';
-      if (!item || !amount) return json(response, 400, { error: 'Item and amount are required.' });
+      const movieId = Number(body.movieId);
+      const telegramUsername = typeof body.telegramUsername === 'string'
+        ? body.telegramUsername.trim().replace(/^@/, '')
+        : '';
+      if (!Number.isSafeInteger(movieId) || movieId <= 0 || !/^[A-Za-z0-9_]{5,32}$/.test(telegramUsername)) {
+        return json(response, 400, { error: 'Choose a movie and enter a valid Telegram username.' });
+      }
+      const db = await loadDb();
+      const movie = (db.movies || []).find((entry) => entry.id === movieId);
+      if (!movie || movie.isPaid !== true || !movie.price || movie.price === 'FREE') {
+        return json(response, 404, { error: 'This movie is no longer available for purchase.' });
+      }
 
       const order = {
         id: randomUUID(), claimCode: randomBytes(4).toString('hex').toUpperCase(),
         userId: user.id, customerEmail: user.email, customerName: user.name,
-        item, amount, movieId: body.movieId ?? null, status: 'pending',
+        item: movie.title, amount: movie.price, movieId: movie.id,
+        telegramUsername: `@${telegramUsername}`, status: 'pending', deliveryStatus: 'pending',
         createdAt: new Date().toISOString(),
       };
-      await updateDb((db) => { db.orders.push(order); });
+      await updateDb((latest) => { latest.orders.push(order); });
 
       let notificationSent = false;
       const { TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID } = process.env;
       if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
         const message = [
-          '<b>New ABA payment request</b>',
+          '<b>New movie purchase request</b>',
           `Customer: ${escapeHtml(user.name)} (${escapeHtml(user.email)})`,
-          `Item: ${escapeHtml(item)}`, `Amount: ${escapeHtml(amount)}`,
+          `Telegram: ${escapeHtml(order.telegramUsername)}`,
+          `Movie: ${escapeHtml(order.item)}`, `Amount: ${escapeHtml(order.amount)}`,
           `Order: <code>${order.id}</code>`, `Claim code: <code>${order.claimCode}</code>`,
-          'Status: Pending. Verify the deposit in ABA before approving.',
+          'Status: Pending. Verify the ABA payment, then send the movie manually via Telegram.',
         ].join('\n');
         try {
           const result = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -558,7 +601,7 @@ const server = createServer(async (request, response) => {
         } catch { /* The order remains available in the admin queue. */ }
       }
       paymentAttempts.set(ip, Date.now());
-      return json(response, 201, { orderId: order.id, claimCode: order.claimCode, status: order.status, item, movieId: order.movieId, notificationSent });
+      return json(response, 201, { orderId: order.id, claimCode: order.claimCode, status: order.status, deliveryStatus: order.deliveryStatus, item: order.item, amount: order.amount, movieId: order.movieId, telegramUsername: order.telegramUsername, notificationSent });
     }
 
     if (request.method === 'GET' && url.pathname === '/api/payment-status') {
@@ -569,13 +612,54 @@ const server = createServer(async (request, response) => {
       const db = await loadDb();
       const order = db.orders.find((entry) => entry.id === orderId && entry.claimCode === claimCode && entry.userId === user.id);
       if (!order) return json(response, 404, { error: 'Order not found for this account.' });
-      return json(response, 200, { status: order.status, item: order.item, movieId: order.movieId });
+      return json(response, 200, { status: order.status, deliveryStatus: order.deliveryStatus || 'pending', item: order.item, movieId: order.movieId });
     }
 
     if (url.pathname.startsWith('/api/admin/')) {
       const adminPassword = process.env.ADMIN_PASSWORD;
       if (!adminPassword || !safeEqual(request.headers['x-admin-password'], adminPassword)) return json(response, 401, { error: 'Admin password is incorrect or missing.' });
       const db = await loadDb();
+      if (request.method === 'POST' && url.pathname === '/api/admin/movies') {
+        const body = await readJson(request, 16 * 1024);
+        let movie;
+        try { movie = validateMovie(body); }
+        catch (error) { return json(response, 400, { error: error.message }); }
+        await updateDb((latest) => {
+          latest.movies ||= [];
+          do {
+            movie.id = Number(randomBytes(6).readUIntBE(0, 6)) + 1;
+          } while (latest.movies.some((entry) => entry.id === movie.id));
+          latest.movies.unshift(movie);
+        });
+        return json(response, 201, movie);
+      }
+      const movieMatch = url.pathname.match(/^\/api\/admin\/movies\/(\d+)$/);
+      if (movieMatch && request.method === 'PUT') {
+        const id = Number(movieMatch[1]);
+        const existing = (db.movies || []).find((movie) => movie.id === id);
+        if (!existing) return json(response, 404, { error: 'Movie not found.' });
+        const body = await readJson(request, 16 * 1024);
+        let movie;
+        try { movie = validateMovie(body, existing); }
+        catch (error) { return json(response, 400, { error: error.message }); }
+        movie.id = existing.id;
+        await updateDb((latest) => {
+          latest.movies = (latest.movies || []).map((entry) => entry.id === id ? movie : entry);
+        });
+        return json(response, 200, movie);
+      }
+      if (movieMatch && request.method === 'DELETE') {
+        const id = Number(movieMatch[1]);
+        if (!(db.movies || []).some((movie) => movie.id === id)) return json(response, 404, { error: 'Movie not found.' });
+        await updateDb((latest) => {
+          latest.movies = (latest.movies || []).filter((movie) => movie.id !== id);
+          latest.entitlements = (latest.entitlements || []).map((entry) => ({
+            ...entry,
+            movieIds: (entry.movieIds || []).filter((movieId) => movieId !== id),
+          }));
+        });
+        return json(response, 200, { deleted: true });
+      }
       if (request.method === 'GET' && url.pathname === '/api/admin/analytics') {
         const now = Date.now();
         const recentViews = (db.movieViews || []).filter((entry) => now - entry.viewedAt < 7 * 24 * 60 * 60 * 1000);
@@ -599,25 +683,28 @@ const server = createServer(async (request, response) => {
       if (request.method === 'GET' && url.pathname === '/api/admin/orders') {
         return json(response, 200, db.orders.slice().reverse().map(({ userId: _userId, ...order }) => order));
       }
+      const deliveryMatch = url.pathname.match(/^\/api\/admin\/orders\/([\w-]+)\/delivered$/);
+      if (request.method === 'POST' && deliveryMatch) {
+        const order = db.orders.find((entry) => entry.id === deliveryMatch[1]);
+        if (!order) return json(response, 404, { error: 'Order not found.' });
+        if (order.status !== 'approved') return json(response, 409, { error: 'Verify the payment before marking this movie as sent.' });
+        order.deliveryStatus = 'sent';
+        order.deliveredAt = new Date().toISOString();
+        await updateDb((latest) => {
+          const index = latest.orders.findIndex((entry) => entry.id === order.id);
+          if (index >= 0) latest.orders[index] = order;
+        });
+        return json(response, 200, { status: order.status, deliveryStatus: order.deliveryStatus });
+      }
       const match = url.pathname.match(/^\/api\/admin\/orders\/([\w-]+)\/approve$/);
       if (request.method === 'POST' && match) {
         const order = db.orders.find((entry) => entry.id === match[1]);
         if (!order) return json(response, 404, { error: 'Order not found.' });
         order.status = 'approved';
         order.approvedAt = new Date().toISOString();
-        let access = db.entitlements.find((entry) => entry.userId === order.userId);
-        if (!access) {
-          access = { userId: order.userId, vip: false, movieIds: [] };
-          db.entitlements.push(access);
-        }
-        if (order.movieId == null) access.vip = true;
-        else if (!access.movieIds.includes(order.movieId)) access.movieIds.push(order.movieId);
         await updateDb((latest) => {
           const index = latest.orders.findIndex((entry) => entry.id === order.id);
           if (index >= 0) latest.orders[index] = order;
-          const entitlementIndex = latest.entitlements.findIndex((entry) => entry.userId === access.userId);
-          if (entitlementIndex >= 0) latest.entitlements[entitlementIndex] = access;
-          else latest.entitlements.push(access);
         });
         return json(response, 200, { status: order.status });
       }
