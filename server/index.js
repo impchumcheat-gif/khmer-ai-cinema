@@ -3,11 +3,13 @@ import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSa
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { promisify } from 'node:util';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
 const scrypt = promisify(scryptCallback);
 const DATA_FILE = resolve(process.cwd(), 'server/data/app-data.sqlite');
+const POSTER_DIR = resolve(process.cwd(), 'server/data/posters');
+const MAX_POSTER_BYTES = 10 * 1024 * 1024;
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 const EMAIL_TOKEN_TTL_MS = 60 * 60 * 1000;
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
@@ -41,6 +43,34 @@ const readJson = (request, maxBytes = 4096) => new Promise((resolveBody, rejectB
   });
   request.on('error', rejectBody);
 });
+
+const readBuffer = (request, maxBytes) => new Promise((resolveBody, rejectBody) => {
+  const chunks = [];
+  let bytes = 0;
+  let tooLarge = false;
+  request.on('data', (chunk) => {
+    bytes += chunk.length;
+    if (bytes > maxBytes) {
+      tooLarge = true;
+      return;
+    }
+    if (!tooLarge) chunks.push(chunk);
+  });
+  request.on('end', () => {
+    if (tooLarge) rejectBody(new Error('Poster exceeds the 10 MB upload limit.'));
+    else resolveBody(Buffer.concat(chunks));
+  });
+  request.on('error', rejectBody);
+});
+
+const allowedPosterOrigin = (origin) => {
+  const allowedOrigins = [process.env.APP_URL, 'http://localhost:5173', 'http://127.0.0.1:5173']
+    .filter(Boolean)
+    .map((value) => value.replace(/\/+$/, ''));
+  return allowedOrigins.includes((origin || '').replace(/\/+$/, ''));
+};
+
+const posterUrl = (id) => `${(process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '')}/api/posters/${id}`;
 
 const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -156,6 +186,7 @@ const getUser = async (request) => {
 
 const validateMovie = (body, current = {}) => {
   const { videoUrl: _videoUrl, coverBlob: _coverBlob, videoBlob: _videoBlob, ...safeCurrent } = current;
+  const isPaid = body.isPaid === true;
   const movie = {
     ...safeCurrent,
     title: typeof body.title === 'string' ? body.title.trim() : '',
@@ -163,14 +194,14 @@ const validateMovie = (body, current = {}) => {
     duration: typeof body.duration === 'string' ? body.duration.trim() : '',
     description: typeof body.description === 'string' ? body.description.trim() : '',
     cover: typeof body.cover === 'string' ? body.cover.trim() : '',
-    isPaid: true,
-    price: typeof body.price === 'string' ? body.price.trim() : '',
+    isPaid,
+    price: isPaid ? (typeof body.price === 'string' ? body.price.trim() : '') : 'FREE',
     rating: current.rating || '',
     views: current.views || '0',
   };
   if (!movie.title || movie.title.length > 160 || !movie.category || movie.category.length > 80
     || !movie.duration || movie.duration.length > 24 || movie.description.length > 4000
-    || !movie.price || movie.price.length > 32) {
+    || (movie.isPaid && (!movie.price || movie.price.length > 32))) {
     throw new Error('Please check the movie title, category, duration, description, and price.');
   }
   let parsed;
@@ -182,6 +213,71 @@ const validateMovie = (body, current = {}) => {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
   try {
+    if (url.pathname === '/api/admin/posters' && request.method === 'OPTIONS') {
+      const origin = request.headers.origin || '';
+      if (!allowedPosterOrigin(origin)) return json(response, 403, { error: 'Upload origin is not allowed.' });
+      response.writeHead(204, {
+        'Access-Control-Allow-Origin': origin,
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Password',
+        'Access-Control-Max-Age': '600',
+        Vary: 'Origin',
+      });
+      return response.end();
+    }
+    if (url.pathname === '/api/admin/posters' && request.method === 'POST') {
+      const origin = request.headers.origin || '';
+      const uploadHeaders = { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
+      if (!allowedPosterOrigin(origin)) return json(response, 403, { error: 'Upload origin is not allowed.' });
+      const adminPassword = process.env.ADMIN_PASSWORD;
+      if (!adminPassword || !safeEqual(request.headers['x-admin-password'], adminPassword)) {
+        return json(response, 401, { error: 'Admin password is incorrect or missing.' }, uploadHeaders);
+      }
+      const mimeType = (request.headers['content-type'] || '').split(';')[0].toLowerCase();
+      const extensions = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
+      if (!extensions[mimeType]) return json(response, 415, { error: 'Choose a JPEG, PNG, or WebP poster.' }, uploadHeaders);
+      const declaredLength = Number(request.headers['content-length'] || 0);
+      if (declaredLength > MAX_POSTER_BYTES) return json(response, 413, { error: 'Poster exceeds the 10 MB upload limit.' }, uploadHeaders);
+      let contents;
+      try { contents = await readBuffer(request, MAX_POSTER_BYTES); }
+      catch (error) { return json(response, 413, { error: error.message }, uploadHeaders); }
+      if (!contents.length) return json(response, 400, { error: 'The poster file is empty.' }, uploadHeaders);
+
+      const signatures = {
+        'image/jpeg': contents[0] === 0xff && contents[1] === 0xd8 && contents[2] === 0xff,
+        'image/png': contents.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+        'image/webp': contents.toString('ascii', 0, 4) === 'RIFF' && contents.toString('ascii', 8, 12) === 'WEBP',
+      };
+      if (!signatures[mimeType]) return json(response, 415, { error: 'The selected file does not match its image type.' }, uploadHeaders);
+
+      await mkdir(POSTER_DIR, { recursive: true });
+      const id = randomUUID();
+      try {
+        await writeFile(resolve(POSTER_DIR, `${id}${extensions[mimeType]}`), contents, { flag: 'wx' });
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        return json(response, 500, { error: 'Could not store the poster.' }, uploadHeaders);
+      }
+      return json(response, 201, { url: posterUrl(id) }, uploadHeaders);
+    }
+    const posterMatch = url.pathname.match(/^\/api\/posters\/([0-9a-f-]{36})$/i);
+    if (posterMatch && ['GET', 'HEAD'].includes(request.method)) {
+      const posterPath = resolve(POSTER_DIR);
+      const entries = await readdir(posterPath).catch((error) => {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      });
+      const filename = entries.find((entry) => entry.startsWith(`${posterMatch[1]}.`));
+      if (!filename || resolve(posterPath, filename).startsWith(`${posterPath}${sep}`) === false) return json(response, 404, { error: 'Poster not found.' });
+      const contents = await readFile(resolve(posterPath, filename)).catch((error) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (!contents) return json(response, 404, { error: 'Poster not found.' });
+      const mimeType = { '.jpg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }[filename.slice(filename.lastIndexOf('.'))];
+      response.writeHead(200, { 'Content-Type': mimeType, 'Content-Length': contents.length, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+      return response.end(request.method === 'HEAD' ? undefined : contents);
+    }
     if (request.method === 'GET' && url.pathname === '/api/movies') {
       const db = await loadDb();
       return json(response, 200, (db.movies || []).map(({ videoUrl: _videoUrl, coverBlob: _coverBlob, videoBlob: _videoBlob, ...movie }) => movie));
@@ -495,6 +591,7 @@ const server = createServer(async (request, response) => {
           status: latestOrder.status,
           deliveryStatus: latestOrder.deliveryStatus || 'pending',
           item: latestOrder.item,
+          amount: latestOrder.amount,
           movieId: latestOrder.movieId,
           telegramUsername: latestOrder.telegramUsername,
         } : null,
@@ -568,7 +665,7 @@ const server = createServer(async (request, response) => {
       }
       const db = await loadDb();
       const movie = (db.movies || []).find((entry) => entry.id === movieId);
-      if (!movie || movie.isPaid !== true || !movie.price || movie.price === 'FREE') {
+      if (!movie || (movie.isPaid && (!movie.price || movie.price === 'FREE'))) {
         return json(response, 404, { error: 'This movie is no longer available for purchase.' });
       }
 
@@ -576,7 +673,9 @@ const server = createServer(async (request, response) => {
         id: randomUUID(), claimCode: randomBytes(4).toString('hex').toUpperCase(),
         userId: user.id, customerEmail: user.email, customerName: user.name,
         item: movie.title, amount: movie.price, movieId: movie.id,
-        telegramUsername: `@${telegramUsername}`, status: 'pending', deliveryStatus: 'pending',
+        telegramUsername: `@${telegramUsername}`,
+        status: movie.isPaid ? 'pending' : 'approved',
+        deliveryStatus: 'pending',
         createdAt: new Date().toISOString(),
       };
       await updateDb((latest) => { latest.orders.push(order); });
@@ -590,7 +689,9 @@ const server = createServer(async (request, response) => {
           `Telegram: ${escapeHtml(order.telegramUsername)}`,
           `Movie: ${escapeHtml(order.item)}`, `Amount: ${escapeHtml(order.amount)}`,
           `Order: <code>${order.id}</code>`, `Claim code: <code>${order.claimCode}</code>`,
-          'Status: Pending. Verify the ABA payment, then send the movie manually via Telegram.',
+          movie.isPaid
+            ? 'Status: Pending. Verify the ABA payment, then send the movie manually via Telegram.'
+            : 'Status: Free order. Send the movie manually via Telegram.',
         ].join('\n');
         try {
           const result = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -612,7 +713,7 @@ const server = createServer(async (request, response) => {
       const db = await loadDb();
       const order = db.orders.find((entry) => entry.id === orderId && entry.claimCode === claimCode && entry.userId === user.id);
       if (!order) return json(response, 404, { error: 'Order not found for this account.' });
-      return json(response, 200, { status: order.status, deliveryStatus: order.deliveryStatus || 'pending', item: order.item, movieId: order.movieId });
+      return json(response, 200, { status: order.status, deliveryStatus: order.deliveryStatus || 'pending', item: order.item, amount: order.amount, movieId: order.movieId, telegramUsername: order.telegramUsername });
     }
 
     if (url.pathname.startsWith('/api/admin/')) {
@@ -700,6 +801,8 @@ const server = createServer(async (request, response) => {
       if (request.method === 'POST' && match) {
         const order = db.orders.find((entry) => entry.id === match[1]);
         if (!order) return json(response, 404, { error: 'Order not found.' });
+        if (order.amount === 'FREE') return json(response, 409, { error: 'Free orders do not need payment approval.' });
+        if (order.status !== 'pending') return json(response, 409, { error: 'This order has already been reviewed.' });
         order.status = 'approved';
         order.approvedAt = new Date().toISOString();
         await updateDb((latest) => {

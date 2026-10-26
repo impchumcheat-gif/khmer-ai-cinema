@@ -5,6 +5,9 @@ import {
 } from 'lucide-react';
 import { loadAppState, saveAppState } from './persistedState.js';
 
+const POSTER_UPLOAD_ORIGIN = import.meta.env.PROD ? 'https://khmer-ai-cinema.onrender.com' : '';
+const MAX_POSTER_BYTES = 10 * 1024 * 1024;
+
 export default function App() {
   const [movies, setMovies] = useState([]);
   const [movieCatalogError, setMovieCatalogError] = useState('');
@@ -17,6 +20,7 @@ export default function App() {
   const [favorites, setFavorites] = useState([]);
   const [watchProgress, setWatchProgress] = useState([]);
   const hasAuthenticatedAccount = useRef(false);
+  const posterFileInput = useRef(null);
   const [detailsMovie, setDetailsMovie] = useState(null);
   const [profileSyncError, setProfileSyncError] = useState('');
   const [isStorageReady, setIsStorageReady] = useState(false);
@@ -53,7 +57,7 @@ export default function App() {
 
   // Admin New Movie Form
   const [newMovie, setNewMovie] = useState({
-    title: '', category: 'Action', isPaid: true, price: '$1.00', duration: '1h 00m', cover: '', description: ''
+    title: '', category: 'Action', isPaid: true, price: '$1.00', duration: '1h 00m', cover: '', coverFile: null, description: ''
   });
   const [editingMovieId, setEditingMovieId] = useState(null);
 
@@ -345,7 +349,7 @@ export default function App() {
       setPaymentOrder(result);
       setTelegramUsername(result.telegramUsername);
       setPaymentStatusMessage(result.notificationSent ? '' : 'សំណើត្រូវបានរក្សាទុក ប៉ុន្តែមិនអាចផ្ញើដំណឹង Telegram បានទេ។');
-      setPayStep(2);
+      setPayStep(result.status === 'approved' ? 3 : 2);
     } catch (error) {
       setTelegramNoticeError(error instanceof Error ? error.message : 'Could not create payment request');
     } finally {
@@ -440,32 +444,67 @@ export default function App() {
   };
 
   const resetMovieForm = () => {
+    if (newMovie.cover?.startsWith('blob:')) URL.revokeObjectURL(newMovie.cover);
+    if (posterFileInput.current) posterFileInput.current.value = '';
     setEditingMovieId(null);
     setMovieFormError('');
-    setNewMovie({ title: '', category: 'Action', isPaid: true, price: '$1.00', duration: '1h 00m', cover: '', description: '' });
+    setNewMovie({ title: '', category: 'Action', isPaid: true, price: '$1.00', duration: '1h 00m', cover: '', coverFile: null, description: '' });
+  };
+
+  const handlePosterFileChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setMovieFormError('សូមជ្រើសរើសរូប JPEG, PNG ឬ WebP។');
+      event.target.value = '';
+      return;
+    }
+    if (file.size > MAX_POSTER_BYTES) {
+      setMovieFormError('រូប Poster មិនអាចលើស 10 MB បានទេ។');
+      event.target.value = '';
+      return;
+    }
+    if (newMovie.cover?.startsWith('blob:')) URL.revokeObjectURL(newMovie.cover);
+    setMovieFormError('');
+    setNewMovie((current) => ({ ...current, cover: URL.createObjectURL(file), coverFile: file }));
   };
 
   const startEditingMovie = (movie) => {
+    if (newMovie.cover?.startsWith('blob:')) URL.revokeObjectURL(newMovie.cover);
+    if (posterFileInput.current) posterFileInput.current.value = '';
     setEditingMovieId(movie.id);
     setNewMovie({
       title: movie.title || '',
       category: movie.category || 'Action',
-      isPaid: true,
+      isPaid: movie.isPaid !== false,
       price: movie.price && movie.price !== 'FREE' ? movie.price : '$1.00',
       duration: movie.duration || '1h 00m',
       cover: movie.cover || '',
+      coverFile: null,
       description: movie.description || '',
     });
   };
 
+  const uploadPoster = async (file) => {
+    const response = await fetch(`${POSTER_UPLOAD_ORIGIN}/api/admin/posters`, {
+      method: 'POST',
+      headers: { 'Content-Type': file.type, 'X-Admin-Password': adminPassword },
+      body: file,
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not upload the poster.');
+    return result.url;
+  };
+
   const saveMovieToServer = async (movie, id = null) => {
+    const cover = movie.coverFile ? await uploadPoster(movie.coverFile) : movie.cover;
     const payload = {
       title: movie.title,
       category: movie.category,
-      isPaid: true,
-      price: movie.price,
+      isPaid: movie.isPaid,
+      price: movie.isPaid ? movie.price : 'FREE',
       duration: movie.duration,
-      cover: movie.cover,
+      cover,
       description: movie.description,
     };
     const response = await fetch(id === null ? '/api/admin/movies' : `/api/admin/movies/${id}`, {
@@ -488,14 +527,14 @@ export default function App() {
 
   const handleAddMovie = async (e) => {
     e.preventDefault();
-    if (!newMovie.title || !newMovie.cover || !newMovie.price) {
-      setMovieFormError("សូមបំពេញចំណងជើង តម្លៃ និងតំណរូប Poster ដែលអាចមើលបានសាធារណៈ!");
+    if (!newMovie.title || (!newMovie.coverFile && !newMovie.cover) || (newMovie.isPaid && !newMovie.price)) {
+      setMovieFormError("សូមបំពេញចំណងជើង រូប Poster និងតម្លៃ (ប្រសិនបើមិនមែន Free)!");
       return;
     }
     setIsSavingMovie(true);
     setMovieFormError('');
     try {
-      await saveMovieToServer(newMovie, editingMovieId);
+      await saveMovieToServer({ ...newMovie, price: newMovie.isPaid ? newMovie.price : 'FREE' }, editingMovieId);
       await refreshMovieCatalog();
       resetMovieForm();
     } catch (error) {
@@ -622,7 +661,7 @@ export default function App() {
                 </div>
                 <div className="mt-6 grid gap-3 sm:grid-cols-2">
                   <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs text-slate-400">ការទិញចុងក្រោយ</p><p className="mt-1 font-bold text-white">{paymentOrder?.item || 'មិនទាន់មាន'}</p></div>
-                  <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs text-slate-400">ស្ថានភាព</p><p className={`mt-1 font-bold ${paymentOrder?.deliveryStatus === 'sent' ? 'text-emerald-300' : paymentOrder?.status === 'approved' ? 'text-amber-300' : paymentOrder?.status === 'pending' ? 'text-amber-300' : 'text-slate-300'}`}>{paymentOrder?.deliveryStatus === 'sent' ? 'បានផ្ញើតាម Telegram' : paymentOrder?.status === 'approved' ? 'បានបញ្ជាក់ប្រាក់ · កំពុងរៀបចំផ្ញើ' : paymentOrder?.status === 'pending' ? 'កំពុងរង់ចាំពិនិត្យប្រាក់' : 'មិនទាន់មានសំណើ'}</p></div>
+                  <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs text-slate-400">ស្ថានភាព</p><p className={`mt-1 font-bold ${paymentOrder?.deliveryStatus === 'sent' ? 'text-emerald-300' : paymentOrder?.status === 'approved' ? 'text-amber-300' : paymentOrder?.status === 'pending' ? 'text-amber-300' : 'text-slate-300'}`}>{paymentOrder?.deliveryStatus === 'sent' ? 'បានផ្ញើតាម Telegram' : paymentOrder?.status === 'approved' ? paymentOrder.amount === 'FREE' ? 'Free · កំពុងរៀបចំផ្ញើ' : 'បានបញ្ជាក់ប្រាក់ · កំពុងរៀបចំផ្ញើ' : paymentOrder?.status === 'pending' ? 'កំពុងរង់ចាំពិនិត្យប្រាក់' : 'មិនទាន់មានសំណើ'}</p></div>
                 </div>
                 {paymentOrder && <button type="button" onClick={() => { setPendingMovie(movies.find((movie) => movie.id === paymentOrder.movieId) || null); setPayStep(paymentOrder.status === 'approved' ? 3 : 2); setShowPayModal(true); }} className="mt-5 rounded-xl border border-amber-500/30 px-5 py-2.5 text-sm font-semibold text-amber-200">ពិនិត្យស្ថានភាពការទិញ</button>}
               </section>
@@ -746,7 +785,7 @@ export default function App() {
 
                       <div className="absolute top-3 left-3">
                         <span className="flex items-center gap-1 px-2.5 py-1 bg-amber-500 text-slate-950 text-[10px] font-extrabold rounded-lg shadow">
-                          <Lock className="w-3 h-3" /> {movie.price}
+                          {movie.isPaid ? <><Lock className="w-3 h-3" /> {movie.price}</> : 'FREE'}
                         </span>
                       </div>
                       <div className="absolute right-3 top-3 flex gap-2">
@@ -884,7 +923,7 @@ export default function App() {
                       <div className="flex shrink-0 flex-col gap-2">
                         {order.status === 'pending'
                           ? <button type="button" onClick={() => approvePaymentOrder(order.id)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-500">បញ្ជាក់ប្រាក់ ABA</button>
-                          : <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-center text-xs font-semibold text-emerald-300">បានបញ្ជាក់ប្រាក់</span>}
+                          : <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-center text-xs font-semibold text-emerald-300">{order.amount === 'FREE' ? 'Free · រួចរាល់សម្រាប់ផ្ញើ' : 'បានបញ្ជាក់ប្រាក់'}</span>}
                         {order.status === 'approved' && order.deliveryStatus !== 'sent'
                           ? <button type="button" onClick={() => markOrderDelivered(order.id)} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white hover:bg-sky-500">បានផ្ញើតាម Telegram</button>
                           : order.deliveryStatus === 'sent'
@@ -945,7 +984,18 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-slate-400 mb-1">តម្លៃលក់ ($)</label>
+                    <label className="block text-slate-400 mb-1">តម្លៃ</label>
+                    <select
+                      value={newMovie.isPaid ? 'paid' : 'free'}
+                      onChange={(event) => setNewMovie((current) => ({ ...current, isPaid: event.target.value === 'paid' }))}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white"
+                    >
+                      <option value="free">Free</option>
+                      <option value="paid">មានតម្លៃ</option>
+                    </select>
+                  </div>
+                  {newMovie.isPaid && <div>
+                    <label className="block text-slate-400 mb-1">បញ្ចូលតម្លៃ ($)</label>
                     <input
                       type="text"
                       required
@@ -954,15 +1004,30 @@ export default function App() {
                       placeholder="$1.99"
                       className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white"
                     />
+                  </div>}
+
+                  <div>
+                    <label className="block text-slate-400 mb-1">ជ្រើសរើសរូប Poster ពីកុំព្យូទ័រ</label>
+                    <input
+                      type="file"
+                      ref={posterFileInput}
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={handlePosterFileChange}
+                      className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-amber-500 file:px-3 file:py-2 file:font-semibold file:text-slate-950"
+                    />
+                    <p className="mt-1 text-[11px] text-slate-500">JPEG, PNG ឬ WebP · មិនលើស 10 MB</p>
                   </div>
 
                   <div>
-                    <label className="block text-slate-400 mb-1">តំណ Poster សាធារណៈ (HTTPS)</label>
+                    <label className="block text-slate-400 mb-1">ឬបញ្ចូលតំណ Poster (HTTPS)</label>
                     <input 
                       type="url" 
-                      required
-                      value={newMovie.cover}
-                      onChange={e => setNewMovie({...newMovie, cover: e.target.value})}
+                      value={newMovie.coverFile ? '' : newMovie.cover}
+                      onChange={e => {
+                        if (newMovie.cover?.startsWith('blob:')) URL.revokeObjectURL(newMovie.cover);
+                        if (posterFileInput.current) posterFileInput.current.value = '';
+                        setNewMovie({ ...newMovie, cover: e.target.value, coverFile: null });
+                      }}
                       placeholder="https://..."
                       className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-white mb-1.5"
                     />
@@ -984,7 +1049,7 @@ export default function App() {
                     ></textarea>
                   </div>
 
-                  <p className="text-[11px] leading-5 text-slate-400">គេហទំព័ររក្សាទុកតែព័ត៌មានរឿង និងតំណ Poster ប៉ុណ្ណោះ។ វីដេអូមិនត្រូវបានបង្ហោះ ឬរក្សាទុកលើ Server ទេ។</p>
+                  <p className="text-[11px] leading-5 text-slate-400">Poster ដែលជ្រើសពីកុំព្យូទ័រនឹងបង្ហោះទៅ Server ដើម្បីឲ្យអ្នកទាំងអស់គ្នាមើលឃើញ។ វីដេអូមិនត្រូវបានបង្ហោះលើគេហទំព័រទេ។</p>
                   {movieFormError && <p className="text-sm text-red-300" role="alert">{movieFormError}</p>}
                   <button 
                     type="submit"
@@ -1011,7 +1076,7 @@ export default function App() {
                         <img src={m.cover} alt="" className="w-12 h-12 object-cover rounded-lg" />
                         <div>
                           <h4 className="font-bold text-sm text-slate-200">{m.title}</h4>
-                          <p className="text-[11px] text-slate-400">{m.category} • {m.duration}</p>
+                          <p className="text-[11px] text-slate-400">{m.category} • {m.isPaid ? m.price : 'FREE'}</p>
                         </div>
                       </div>
 
@@ -1048,7 +1113,7 @@ export default function App() {
             <button type="button" onClick={() => setDetailsMovie(null)} aria-label="Close movie details" className="absolute right-3 top-3 z-10 rounded-full bg-black/70 px-3 py-1 text-white hover:bg-slate-700">✕</button>
             <img src={detailsMovie.cover} alt={detailsMovie.title} className="h-64 w-full object-cover md:h-full" />
             <div className="space-y-4 p-6">
-              <span className="inline-flex rounded-full bg-amber-500/15 px-3 py-1 text-xs font-bold text-amber-300">តម្លៃ {detailsMovie.price}</span>
+              <span className="inline-flex rounded-full bg-amber-500/15 px-3 py-1 text-xs font-bold text-amber-300">{detailsMovie.isPaid ? `តម្លៃ ${detailsMovie.price}` : 'FREE'}</span>
               <div>
                 <h2 id="movie-details-title" className="text-2xl font-bold text-white">{detailsMovie.title}</h2>
                 <p className="mt-1 text-sm text-slate-400">{detailsMovie.titleEn || 'ភាពយន្តខ្មែរ'} · {detailsMovie.category}</p>
@@ -1056,7 +1121,7 @@ export default function App() {
               <div className="flex gap-4 text-sm text-slate-300"><span>⭐ {detailsMovie.rating}</span><span>{detailsMovie.duration}</span><span>{detailsMovie.views} views</span></div>
               <p className="text-sm leading-6 text-slate-300">{detailsMovie.description || 'មិនទាន់មានការពិពណ៌នាសម្រាប់ភាពយន្តនេះទេ។'}</p>
               <div className="flex flex-wrap gap-2 pt-2">
-                <button type="button" onClick={() => beginMoviePurchase(detailsMovie)} className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-red-500"><Lock className="h-4 w-4" /> ទិញរឿង · {detailsMovie.price}</button>
+                <button type="button" onClick={() => beginMoviePurchase(detailsMovie)} className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-red-500">{detailsMovie.isPaid ? <><Lock className="h-4 w-4" /> ទិញរឿង · {detailsMovie.price}</> : 'ស្នើសុំរឿង Free'}</button>
                 <button type="button" onClick={() => toggleFavorite(detailsMovie.id)} className="inline-flex items-center gap-2 rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:border-pink-500/50">
                   <Heart className={`h-4 w-4 ${favorites.includes(detailsMovie.id) ? 'fill-pink-500 text-pink-500' : ''}`} />
                   {favorites.includes(detailsMovie.id) ? 'ដកចេញពីបញ្ជី' : 'ចង់មើល'}
@@ -1085,7 +1150,7 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="text-xl font-bold text-white">បញ្ជាទិញ៖ {pendingMovie?.title}</h3>
-                  <p className="mt-1 text-xs text-slate-400">បង់ប្រាក់តាម ABA ហើយយើងនឹងផ្ញើរឿងទៅ Telegram របស់អ្នក។</p>
+                  <p className="mt-1 text-xs text-slate-400">{pendingMovie?.isPaid ? 'បង់ប្រាក់តាម ABA ហើយយើងនឹងផ្ញើរឿងទៅ Telegram របស់អ្នក។' : 'រឿងនេះ Free។ បញ្ចូល Telegram username ដើម្បីស្នើសុំឲ្យយើងផ្ញើរឿង។'}</p>
                 </div>
 
                 <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 text-left space-y-2">
@@ -1095,7 +1160,7 @@ export default function App() {
                   </div>
                   <div className="flex justify-between text-xs text-slate-300">
                     <span>តម្លៃសរុប:</span>
-                    <span className="font-bold text-amber-400">{pendingMovie?.price}</span>
+                    <span className="font-bold text-amber-400">{pendingMovie?.isPaid ? pendingMovie.price : 'FREE'}</span>
                   </div>
                 </div>
 
@@ -1119,7 +1184,7 @@ export default function App() {
                   disabled={!currentUser || !pendingMovie || !telegramUsername.trim() || isCreatingOrder}
                   className="w-full py-3 bg-gradient-to-r from-red-600 to-amber-500 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 font-bold text-white rounded-xl shadow-lg"
                 >
-                  {isCreatingOrder ? 'កំពុងបង្កើតសំណើ…' : 'បង្កើតសំណើ និងបង់ប្រាក់តាម ABA'}
+                  {isCreatingOrder ? 'កំពុងបង្កើតសំណើ…' : pendingMovie?.isPaid ? 'បង្កើតសំណើ និងបង់ប្រាក់តាម ABA' : 'ស្នើសុំរឿង Free តាម Telegram'}
                 </button>
                 {telegramNoticeError && <p className="text-xs text-red-300" role="alert">{telegramNoticeError}</p>}
               </div>
@@ -1146,8 +1211,8 @@ export default function App() {
               <div className="space-y-5 py-2 text-center">
                 <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/15 text-3xl text-emerald-400">?</div>
                 <div>
-                  <h3 className="text-xl font-bold text-white">{paymentOrder?.deliveryStatus === 'sent' ? 'បានផ្ញើរឿងរួចហើយ' : 'បានបញ្ជាក់ការទូទាត់'}</h3>
-                  <p className="mt-1 text-xs text-slate-400">{paymentOrder?.deliveryStatus === 'sent' ? `សូមពិនិត្យ Telegram ${paymentOrder?.telegramUsername || telegramUsername} ដើម្បីទទួលភាពយន្ត។` : `ការទូទាត់បានផ្ទៀងផ្ទាត់ហើយ។ សូមរង់ចាំទទួលរឿងតាម Telegram ${paymentOrder?.telegramUsername || telegramUsername}។`}</p>
+                  <h3 className="text-xl font-bold text-white">{paymentOrder?.deliveryStatus === 'sent' ? 'បានផ្ញើរឿងរួចហើយ' : paymentOrder?.amount === 'FREE' ? 'បានទទួលសំណើ Free' : 'បានបញ្ជាក់ការទូទាត់'}</h3>
+                  <p className="mt-1 text-xs text-slate-400">{paymentOrder?.deliveryStatus === 'sent' ? `សូមពិនិត្យ Telegram ${paymentOrder?.telegramUsername || telegramUsername} ដើម្បីទទួលភាពយន្ត។` : paymentOrder?.amount === 'FREE' ? `សំណើ Free របស់អ្នកបានទទួលហើយ។ សូមរង់ចាំរឿងតាម Telegram ${paymentOrder?.telegramUsername || telegramUsername}។` : `ការទូទាត់បានផ្ទៀងផ្ទាត់ហើយ។ សូមរង់ចាំទទួលរឿងតាម Telegram ${paymentOrder?.telegramUsername || telegramUsername}។`}</p>
                 </div>
                 <button type="button" onClick={checkPaymentStatus} className="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">ធ្វើបច្ចុប្បន្នភាពស្ថានភាព Telegram</button>
                 <button type="button" onClick={() => setShowPayModal(false)} className="w-full rounded-xl bg-slate-700 py-3 font-bold text-white hover:bg-slate-600">បិទ</button>
