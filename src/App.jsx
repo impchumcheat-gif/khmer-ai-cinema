@@ -603,7 +603,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
       {/* Header / Navigation */}
       <header className="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-3 py-3 flex min-w-0 flex-wrap items-center justify-between gap-3 sm:px-4 sm:gap-4">
           <div className="flex items-center gap-3 cursor-pointer" onClick={() => setActiveTab('home')}>
             <div className="p-2 bg-gradient-to-tr from-red-600 to-amber-500 rounded-xl shadow-lg shadow-red-900/30">
               <Film className="w-6 h-6 text-white" />
@@ -633,11 +633,11 @@ export default function App() {
 
           {/* Separate customer navigation from the Admin workspace */}
           {activeTab === 'admin' ? (
-            <div className="flex items-center gap-3">
+            <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:gap-3">
               <span className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-bold tracking-wide text-red-200">អ្នកគ្រប់គ្រង · ADMIN</span>
               <button type="button" onClick={() => setActiveTab(currentUser ? 'customer' : 'home')} className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20">អតិថិជន · CUSTOMER</button>
             </div>
-          ) : <div className="flex items-center gap-3">
+          ) : <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:gap-3">
             {currentUser ? (
               <div className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/80 px-2 py-1.5">
                 <UserRound className="h-4 w-4 text-emerald-300" />
@@ -673,7 +673,7 @@ export default function App() {
       </header>
 
       {/* MAIN CONTENT AREA */}
-      <main className="max-w-7xl mx-auto px-4 py-6">
+      <main className="mx-auto w-full max-w-7xl px-3 py-4 sm:px-4 sm:py-6">
         <div className="mb-4 text-xs" role={storageError || movieCatalogError ? 'alert' : 'status'} aria-live="polite">
           {storageError ? (
             <p className="text-red-400">
@@ -809,7 +809,7 @@ export default function App() {
             </>}
 
             {/* Movie Grid */}
-            <div id="movie-catalog" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 md:gap-6">
+            <div id="movie-catalog" className="grid grid-cols-1 gap-4 min-[480px]:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 md:gap-6">
               {filteredMovies.map((movie) => {
                 return (
                   <div 
