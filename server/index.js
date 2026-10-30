@@ -1,15 +1,17 @@
 import { createServer } from 'node:http';
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
+import pg from 'pg';
 
 const scrypt = promisify(scryptCallback);
 const DATA_FILE = resolve(process.cwd(), 'server/data/app-data.sqlite');
 const POSTER_DIR = resolve(process.cwd(), 'server/data/posters');
 const MAX_POSTER_BYTES = 10 * 1024 * 1024;
+const { Pool } = pg;
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 const EMAIL_TOKEN_TTL_MS = 60 * 60 * 1000;
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
@@ -113,8 +115,14 @@ const orderTelegramMessage = (order) => [
 ].join('\n');
 
 let database;
+let postgresPool;
 const emptyDb = () => ({ users: [], orders: [], entitlements: [], emailTokens: [], passwordResetTokens: [], magicTokens: [], googleStates: [], sessions: [], movieViews: [], movies: [] });
 const loadDb = async () => {
+  if (postgresPool) {
+    const { rows } = await postgresPool.query('SELECT data FROM app_state WHERE id = 1');
+    if (!rows[0]) throw new Error('Application database is not initialized.');
+    return typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+  }
   const row = database.prepare('SELECT data FROM app_state WHERE id = 1').get();
   return JSON.parse(row.data);
 };
@@ -122,6 +130,24 @@ const loadDb = async () => {
 let writeQueue = Promise.resolve();
 const updateDb = (update) => {
   const operation = writeQueue.then(async () => {
+    if (postgresPool) {
+      const client = await postgresPool.connect();
+      try {
+        await client.query('BEGIN');
+        const { rows } = await client.query('SELECT data FROM app_state WHERE id = 1 FOR UPDATE');
+        if (!rows[0]) throw new Error('Application database is not initialized.');
+        const db = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        const result = await update(db);
+        await client.query('UPDATE app_state SET data = $1 WHERE id = 1', [JSON.stringify(db)]);
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
     const db = await loadDb();
     const result = await update(db);
     database.prepare('UPDATE app_state SET data = ? WHERE id = 1').run(JSON.stringify(db));
@@ -129,6 +155,55 @@ const updateDb = (update) => {
   });
   writeQueue = operation.catch(() => undefined);
   return operation;
+};
+
+const readLegacyData = async () => {
+  if (existsSync(DATA_FILE)) {
+    const legacyDatabase = new DatabaseSync(DATA_FILE);
+    try {
+      const row = legacyDatabase.prepare('SELECT data FROM app_state WHERE id = 1').get();
+      if (row) return { ...emptyDb(), ...JSON.parse(row.data) };
+    } finally {
+      legacyDatabase.close();
+    }
+  }
+  try {
+    const data = JSON.parse(await readFile(resolve(process.cwd(), 'server/data/app-data.json'), 'utf8'));
+    for (const user of data.users || []) if (user.verified === undefined) user.verified = true;
+    return { ...emptyDb(), ...data };
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return emptyDb();
+  }
+};
+
+const initializeDatabase = async () => {
+  if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL is required in production so saved movies survive Render restarts.');
+  }
+  if (process.env.DATABASE_URL) {
+    postgresPool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: 5,
+      connectionTimeoutMillis: 10000,
+    });
+    await postgresPool.query('CREATE TABLE IF NOT EXISTS app_state (id SMALLINT PRIMARY KEY CHECK (id = 1), data JSONB NOT NULL)');
+    const { rows } = await postgresPool.query('SELECT id FROM app_state WHERE id = 1');
+    if (!rows.length) {
+      await postgresPool.query(
+        'INSERT INTO app_state (id, data) VALUES (1, $1) ON CONFLICT (id) DO NOTHING',
+        [JSON.stringify(await readLegacyData())],
+      );
+    }
+    return;
+  }
+
+  mkdirSync(resolve(process.cwd(), 'server/data'), { recursive: true });
+  database = new DatabaseSync(DATA_FILE);
+  database.exec('CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)');
+  if (!database.prepare('SELECT id FROM app_state WHERE id = 1').get()) {
+    database.prepare('INSERT INTO app_state (id, data) VALUES (1, ?)').run(JSON.stringify(await readLegacyData()));
+  }
 };
 
 const hashPassword = async (password, salt = randomBytes(16).toString('hex')) => {
@@ -184,20 +259,11 @@ const clearGoogleStateCookie = (response) => {
 
 await loadLocalEnv();
 
-mkdirSync(resolve(process.cwd(), 'server/data'), { recursive: true });
-database = new DatabaseSync(DATA_FILE);
-database.exec('CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)');
-if (!database.prepare('SELECT id FROM app_state WHERE id = 1').get()) {
-  let initialData = emptyDb();
-  try {
-    initialData = { ...initialData, ...JSON.parse(await readFile(resolve(process.cwd(), 'server/data/app-data.json'), 'utf8')) };
-    // Keep existing local accounts usable when migrating from the JSON-backed version.
-    for (const user of initialData.users) if (user.verified === undefined) user.verified = true;
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-  database.prepare('INSERT INTO app_state (id, data) VALUES (1, ?)').run(JSON.stringify(initialData));
+if (process.env.NODE_ENV === 'production'
+  && (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY)) {
+  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production to persist poster uploads.');
 }
+await initializeDatabase();
 
 const authAttempts = new Map();
 const paymentAttempts = new Map();
@@ -286,10 +352,38 @@ const server = createServer(async (request, response) => {
       };
       if (!signatures[mimeType]) return json(response, 415, { error: 'The selected file does not match its image type.' }, uploadHeaders);
 
-      await mkdir(POSTER_DIR, { recursive: true });
       const id = randomUUID();
+      const filename = `${id}${extensions[mimeType]}`;
+      if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+        const storageUrl = process.env.SUPABASE_URL.replace(/\/+$/, '');
+        const bucket = encodeURIComponent(process.env.SUPABASE_POSTER_BUCKET || 'movie-posters');
+        const uploadUrl = `${storageUrl}/storage/v1/object/${bucket}/${encodeURIComponent(filename)}`;
+        const upload = await fetch(uploadUrl, {
+          method: 'POST',
+          headers: {
+            apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+            Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+            'Content-Type': mimeType,
+            'x-upsert': 'false',
+          },
+          body: contents,
+          signal: AbortSignal.timeout(30000),
+        });
+        if (!upload.ok) {
+          const result = await upload.json().catch(() => ({}));
+          return json(response, 502, { error: result.message || result.error || `Poster storage returned HTTP ${upload.status}.` }, uploadHeaders);
+        }
+        return json(response, 201, {
+          url: `${storageUrl}/storage/v1/object/public/${bucket}/${encodeURIComponent(filename)}`,
+        }, uploadHeaders);
+      }
+      if (process.env.NODE_ENV === 'production') {
+        return json(response, 503, { error: 'Poster storage is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on Render.' }, uploadHeaders);
+      }
+
+      await mkdir(POSTER_DIR, { recursive: true });
       try {
-        await writeFile(resolve(POSTER_DIR, `${id}${extensions[mimeType]}`), contents, { flag: 'wx' });
+        await writeFile(resolve(POSTER_DIR, filename), contents, { flag: 'wx' });
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
         return json(response, 500, { error: 'Could not store the poster.' }, uploadHeaders);

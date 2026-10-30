@@ -2,13 +2,9 @@ services:
   - type: web
     name: khmer-ai-cinema
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm ci && npm run build
     startCommand: node server/index.js
-    disk:
-      name: cinema-data
-      mountPath: /opt/render/project/src/server/data
-      sizeGB: 1
     envVars:
       - key: NODE_VERSION
         value: 22.12.0
@@ -28,6 +24,14 @@ services:
         sync: false
       - key: GOOGLE_REDIRECT_URI
         value: https://khmer-ai-cinema.vercel.app/api/auth/google/callback
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_POSTER_BUCKET
+        value: movie-posters
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID

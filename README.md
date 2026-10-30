@@ -6,10 +6,11 @@ The frontend can be deployed to Vercel, but the account, Google sign-in, payment
 
 ### 1. Deploy the API server to Render
 
-1. Create a Render **Blueprint** from this repository and apply the existing `render.yaml`.
-2. Wait for the `khmer-ai-cinema` web service to finish its first deploy. The persistent disk stores the SQLite database (accounts, payment records, and movie catalog). The current Blueprint uses a Starter web service and a 1 GB disk; check Render's current pricing before deploying. A free service without persistent storage can lose database changes after a restart or redeploy.
-3. `APP_URL` and `GOOGLE_REDIRECT_URI` are preconfigured in `render.yaml` for `https://khmer-ai-cinema.vercel.app`. Change these values there if you use a different Vercel domain.
-4. Set `ADMIN_PASSWORD` to a strong, private password. Configure `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and the email/Telegram values if those features are needed.
+1. Create a Supabase project and a **public** Storage bucket named `movie-posters`. Allow JPEG, PNG, and WebP files up to 10 MB.
+2. In Supabase, copy the PostgreSQL connection string (use the Session Pooler if the direct connection is unavailable) and the Project URL. Keep the database password and service-role key private.
+3. Create a Render **Blueprint** from this repository and apply `render.yaml`. Set `DATABASE_URL`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` in the Render environment before the first deploy. These server-side variables are required in production; do not add them to Vercel or frontend code.
+4. `APP_URL` and `GOOGLE_REDIRECT_URI` are preconfigured in `render.yaml` for `https://khmer-ai-cinema.vercel.app`. Change these values there if you use a different Vercel domain.
+5. Set `ADMIN_PASSWORD` to a strong, private password. Configure `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and the email/Telegram values if those features are needed.
 
 ### 2. Configure Vercel
 
@@ -27,7 +28,7 @@ Set `APP_URL` on Render to the same Vercel origin. If `GOOGLE_REDIRECT_URI` is s
 
 ### Poster catalog and Telegram delivery
 
-Movies are stored in the Render SQLite database and are visible to every visitor. Admins can choose a JPEG, PNG, or WebP poster from their computer (up to 10 MB); poster images are stored on the Render persistent disk. A public HTTPS poster URL can also be used. Free movies can be marked **Free**; paid movies require a price. Movie videos are not uploaded or stored by the website.
+Movies and account/order data are stored in Supabase PostgreSQL; uploaded posters are stored in the Supabase `movie-posters` bucket. This keeps them independent of Render Free's temporary filesystem. Admins can upload JPEG, PNG, or WebP posters up to 10 MB or provide a public HTTPS poster URL. Free movies can be marked **Free**; paid movies require a price. Movie videos are not uploaded or stored by the website. Supabase Free projects may pause after a week of inactivity; data remains in the project and is available again when resumed. Check the provider's current limits.
 
 Customers sign in, choose a movie, provide their Telegram username, and submit an ABA payment request. The owner verifies the payment manually in ABA, approves the order in Admin, sends the movie to the customer through Telegram, then marks the order as sent. Configure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the Render service environment to notify the owner about every new order. In Admin, use **ផ្ញើសារសាកល្បងទៅ Telegram bot** to verify the bot configuration; failed order alerts show the Telegram error and can be retried from the order list. Movie files are sent manually and are never uploaded to this website.
 
