@@ -63,6 +63,14 @@ export default function App() {
   });
   const [editingMovieId, setEditingMovieId] = useState(null);
 
+  useEffect(() => {
+    const isModalOpen = showPayModal || showAuthModal || Boolean(detailsMovie);
+    if (!isModalOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [showPayModal, showAuthModal, detailsMovie]);
+
   const refreshAccount = async () => {
     const response = await fetch('/api/auth/me');
     if (!response.ok) throw new Error('Could not load account');
@@ -619,7 +627,7 @@ export default function App() {
 
           {/* Search Bar */}
           {activeTab === 'home' && (
-            <div className="relative flex-1 max-w-md hidden md:block">
+            <div className="relative hidden max-w-md flex-1 md:block">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input 
                 type="text"
@@ -725,7 +733,16 @@ export default function App() {
         {/* VIEW 2: HOME / CATALOG */}
         {activeTab === 'home' && (
           <div className="space-y-8">
-            
+            <label className="relative block md:hidden">
+              <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                placeholder="ស្វែងរកចំណងជើងរឿង AI..."
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                className="w-full rounded-full border border-slate-700 bg-slate-900 py-3 pl-11 pr-4 text-base text-slate-100 outline-none focus:border-red-500"
+              />
+            </label>
             {/* Banner Section */}
             <div className="relative rounded-3xl overflow-hidden bg-gradient-to-r from-red-950 via-slate-900 to-slate-950 border border-slate-800 p-8 md:p-12 shadow-2xl">
               <div className="relative z-10 max-w-xl space-y-4">
@@ -1171,10 +1188,10 @@ export default function App() {
       </main>
 
       {detailsMovie && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" onClick={() => setDetailsMovie(null)}>
-          <section role="dialog" aria-modal="true" aria-labelledby="movie-details-title" className="relative grid w-full max-w-3xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 md:grid-cols-2" onClick={(event) => event.stopPropagation()}>
-            <button type="button" onClick={() => setDetailsMovie(null)} aria-label="Close movie details" className="absolute right-3 top-3 z-10 rounded-full bg-black/70 px-3 py-1 text-white hover:bg-slate-700">✕</button>
-            <img src={detailsMovie.cover} alt={detailsMovie.title} className="h-64 w-full object-cover md:h-full" />
+        <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain bg-black/80 p-2 backdrop-blur-sm sm:flex sm:items-center sm:justify-center sm:p-4" onClick={() => setDetailsMovie(null)}>
+          <section role="dialog" aria-modal="true" aria-labelledby="movie-details-title" className="relative mx-auto my-2 grid max-h-[calc(100dvh-1rem)] w-full max-w-3xl overflow-y-auto overscroll-contain rounded-2xl border border-slate-700 bg-slate-900 sm:my-0 md:grid-cols-2" onClick={(event) => event.stopPropagation()}>
+            <button type="button" onClick={() => setDetailsMovie(null)} aria-label="Close movie details" className="absolute right-3 top-3 z-10 flex h-11 w-11 items-center justify-center rounded-full bg-black/70 text-lg text-white hover:bg-slate-700">✕</button>
+            <img src={detailsMovie.cover} alt={detailsMovie.title} className="h-48 w-full object-cover sm:h-64 md:h-full" />
             <div className="space-y-4 p-6">
               <span className="inline-flex rounded-full bg-amber-500/15 px-3 py-1 text-xs font-bold text-amber-300">{detailsMovie.isPaid ? `តម្លៃ ${detailsMovie.price}` : 'FREE'}</span>
               <div>
@@ -1183,9 +1200,9 @@ export default function App() {
               </div>
               <div className="flex gap-4 text-sm text-slate-300"><span>⭐ {detailsMovie.rating}</span><span>{detailsMovie.duration}</span><span>{detailsMovie.views} views</span></div>
               <p className="text-sm leading-6 text-slate-300">{detailsMovie.description || 'មិនទាន់មានការពិពណ៌នាសម្រាប់ភាពយន្តនេះទេ។'}</p>
-              <div className="flex flex-wrap gap-2 pt-2">
-                <button type="button" onClick={() => beginMoviePurchase(detailsMovie)} className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-red-500">{detailsMovie.isPaid ? <><Lock className="h-4 w-4" /> ទិញរឿង · {detailsMovie.price}</> : 'ស្នើសុំរឿង Free'}</button>
-                <button type="button" onClick={() => toggleFavorite(detailsMovie.id)} className="inline-flex items-center gap-2 rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-semibold text-white hover:border-pink-500/50">
+              <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:flex-wrap">
+                <button type="button" onClick={() => beginMoviePurchase(detailsMovie)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-3 text-sm font-bold text-white hover:bg-red-500">{detailsMovie.isPaid ? <><Lock className="h-4 w-4" /> ទិញរឿង · {detailsMovie.price}</> : 'ស្នើសុំរឿង Free'}</button>
+                <button type="button" onClick={() => toggleFavorite(detailsMovie.id)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-700 px-4 py-3 text-sm font-semibold text-white hover:border-pink-500/50">
                   <Heart className={`h-4 w-4 ${favorites.includes(detailsMovie.id) ? 'fill-pink-500 text-pink-500' : ''}`} />
                   {favorites.includes(detailsMovie.id) ? 'ដកចេញពីបញ្ជី' : 'ចង់មើល'}
                 </button>
@@ -1197,14 +1214,23 @@ export default function App() {
 
       {/* Personal ABA KHQR payment (manual confirmation) */}
       {showPayModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full relative space-y-6 shadow-2xl">
-            <button 
-              onClick={() => { setShowPayModal(false); setPayStep(1); }}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white"
-            >
-              ✕
-            </button>
+        <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain bg-black/80 p-2 backdrop-blur-sm sm:flex sm:items-center sm:justify-center sm:p-4">
+          <section role="dialog" aria-modal="true" aria-labelledby="checkout-title" className="mx-auto my-2 flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 p-4 shadow-2xl sm:my-0 sm:rounded-3xl sm:p-6">
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-800 pb-3">
+              <div className="min-w-0">
+                <h2 id="checkout-title" className="text-base font-bold text-white">ការបញ្ជាទិញ</h2>
+                <p className="truncate text-sm text-slate-400">{pendingMovie?.title}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setShowPayModal(false); setPayStep(1); }}
+                aria-label="បិទការបញ្ជាទិញ"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl text-slate-300 hover:bg-slate-800 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pt-4">
 
             {payStep === 1 && (
               <div className="space-y-5 text-center">
@@ -1238,14 +1264,14 @@ export default function App() {
                     value={telegramUsername}
                     onChange={(event) => setTelegramUsername(event.target.value)}
                     placeholder="@your_username"
-                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm text-white outline-none focus:border-sky-500"
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 p-3 text-base text-white outline-none focus:border-sky-500"
                   />
                 </label>
                 <p className="rounded-lg border border-slate-700 bg-slate-950 p-3 text-left text-xs text-slate-300">គណនី៖ <span className="font-semibold text-white">{currentUser?.email}</span> · សូមប្រាកដថា username ត្រឹមត្រូវ និងអាចស្វែងរកបានក្នុង Telegram។</p>
                 <button 
                   onClick={confirmPayment}
                   disabled={!currentUser || !pendingMovie || !telegramUsername.trim() || isCreatingOrder}
-                  className="w-full py-3 bg-gradient-to-r from-red-600 to-amber-500 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 font-bold text-white rounded-xl shadow-lg"
+                  className="min-h-12 w-full rounded-xl bg-gradient-to-r from-red-600 to-amber-500 py-3 font-bold text-white shadow-lg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {isCreatingOrder ? 'កំពុងបង្កើតសំណើ…' : pendingMovie?.isPaid ? 'បង្កើតសំណើ និងបង់ប្រាក់តាម ABA' : 'ស្នើសុំរឿង Free តាម Telegram'}
                 </button>
@@ -1258,15 +1284,15 @@ export default function App() {
                 <h3 className="text-lg font-bold text-white">ស្កេន KHQR ដើម្បីបង់ប្រាក់</h3>
                 <p className="text-sm text-slate-300">គណនី៖ CHUMCHEAT HAN · ABA</p>
                 {paymentOrder && <div className="rounded-xl border border-slate-700 bg-slate-950 p-3 text-left text-xs text-slate-300"><p>រឿង៖ {paymentOrder.item} · {paymentOrder.amount}</p><p className="mt-1">Telegram៖ {paymentOrder.telegramUsername || telegramUsername}</p><p className="mt-1">លេខសំណើ៖ <code className="select-all text-amber-300">{paymentOrder.orderId}</code></p><p className="mt-1">កូដសំណើ៖ <code className="select-all text-amber-300">{paymentOrder.claimCode}</code></p><p className="mt-1">សូមរក្សាកូដនេះទុកសម្រាប់ពិនិត្យស្ថានភាព។</p></div>}
-                <div className="mx-auto w-full max-w-xs rounded-2xl bg-white p-3">
-                  <img src="/photo_2026-10-21_08-44-19.jpg" alt="Personal ABA KHQR for CHUMCHEAT HAN" className="block w-full rounded-lg" onLoad={(event) => { event.currentTarget.nextElementSibling.style.display = 'none'; }} onError={(event) => { event.currentTarget.style.display = 'none'; }} />
+                <div className="mx-auto flex w-full max-w-xs justify-center rounded-2xl bg-white p-2 sm:p-3">
+                  <img src="/photo_2026-10-21_08-44-19.jpg" alt="Personal ABA KHQR for CHUMCHEAT HAN" className="max-h-[36dvh] max-w-full rounded-lg object-contain sm:max-h-[420px]" onLoad={(event) => { event.currentTarget.nextElementSibling.style.display = 'none'; }} onError={(event) => { event.currentTarget.style.display = 'none'; }} />
                   <p className="py-6 text-sm text-slate-700">រកមិនឃើញរូប KHQR ក្នុងថត <code>public</code></p>
                 </div>
                 <p className="text-xs text-slate-400">ចំនួនប្រាក់៖ {paymentOrder?.amount || pendingMovie?.price} · សូមពិនិត្យឈ្មោះអ្នកទទួល CHUMCHEAT HAN មុនបញ្ជាក់។</p>
                 <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">បន្ទាប់ពីផ្ទៀងផ្ទាត់ប្រាក់រួច ម្ចាស់គេហទំព័រនឹងផ្ញើភាពយន្តទៅ Telegram ដោយដៃ។ មិនមានការចាក់វីដេអូនៅលើគេហទំព័រនេះទេ។</p>
                 {paymentStatusMessage && <p className="text-xs text-amber-200" role="status">{paymentStatusMessage}</p>}
-                <button type="button" onClick={checkPaymentStatus} className="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">ពិនិត្យស្ថានភាពការទូទាត់</button>
-                <button type="button" onClick={() => { setShowPayModal(false); setPayStep(1); }} className="w-full rounded-xl bg-slate-700 py-3 font-bold text-white hover:bg-slate-600">បិទ</button>
+                <button type="button" onClick={checkPaymentStatus} className="min-h-12 w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">ពិនិត្យស្ថានភាពការទូទាត់</button>
+                <button type="button" onClick={() => { setShowPayModal(false); setPayStep(1); }} className="min-h-12 w-full rounded-xl bg-slate-700 py-3 font-bold text-white hover:bg-slate-600">បិទ</button>
               </div>
             )}
 
@@ -1278,47 +1304,47 @@ export default function App() {
                   <p className="mt-1 text-xs text-slate-400">{paymentOrder?.deliveryStatus === 'sent' ? `សូមពិនិត្យ Telegram ${paymentOrder?.telegramUsername || telegramUsername} ដើម្បីទទួលភាពយន្ត។` : paymentOrder?.amount === 'FREE' ? `សំណើ Free របស់អ្នកបានទទួលហើយ។ សូមរង់ចាំរឿងតាម Telegram ${paymentOrder?.telegramUsername || telegramUsername}។` : `ការទូទាត់បានផ្ទៀងផ្ទាត់ហើយ។ សូមរង់ចាំទទួលរឿងតាម Telegram ${paymentOrder?.telegramUsername || telegramUsername}។`}</p>
                 </div>
                 {paymentStatusMessage && <p className="text-xs text-amber-200" role="status">{paymentStatusMessage}</p>}
-                <button type="button" onClick={checkPaymentStatus} className="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">ធ្វើបច្ចុប្បន្នភាពស្ថានភាព Telegram</button>
-                <button type="button" onClick={() => setShowPayModal(false)} className="w-full rounded-xl bg-slate-700 py-3 font-bold text-white hover:bg-slate-600">បិទ</button>
+                <button type="button" onClick={checkPaymentStatus} className="min-h-12 w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">ធ្វើបច្ចុប្បន្នភាពស្ថានភាព Telegram</button>
+                <button type="button" onClick={() => setShowPayModal(false)} className="min-h-12 w-full rounded-xl bg-slate-700 py-3 font-bold text-white hover:bg-slate-600">បិទ</button>
               </div>
             )}
-
-          </div>
+            </div>
+          </section>
         </div>
       )}
 
       {showAuthModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
-          <section className="relative w-full max-w-md space-y-5 rounded-3xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
-            <button type="button" onClick={() => { setShowAuthModal(false); setCheckoutAfterAuth(false); }} className="absolute right-4 top-4 text-slate-400 hover:text-white" aria-label="Close">×</button>
+        <div className="fixed inset-0 z-[60] overflow-y-auto overscroll-contain bg-black/80 p-2 backdrop-blur-sm sm:flex sm:items-center sm:justify-center sm:p-4">
+          <section role="dialog" aria-modal="true" aria-labelledby="auth-title" className="relative mx-auto my-2 max-h-[calc(100dvh-1rem)] w-full max-w-md space-y-5 overflow-y-auto overscroll-contain rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl sm:my-0 sm:rounded-3xl sm:p-6">
+            <button type="button" onClick={() => { setShowAuthModal(false); setCheckoutAfterAuth(false); }} className="absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-full text-xl text-slate-300 hover:bg-slate-800 hover:text-white" aria-label="Close">×</button>
             <div className="text-center">
               <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-300"><UserRound className="h-6 w-6" /></div>
-              <h2 className="text-xl font-bold text-white">{authMode === 'signup' ? 'បង្កើតគណនីអតិថិជន' : authMode === 'forgot' ? 'ស្តារពាក្យសម្ងាត់' : authMode === 'reset' ? 'កំណត់ពាក្យសម្ងាត់ថ្មី' : authMode === 'verify' ? 'កំពុងផ្ទៀងផ្ទាត់អ៊ីមែល' : authMode === 'magic' ? 'ចូលតាមអ៊ីមែល' : 'ចូលគណនី'}</h2>
+              <h2 id="auth-title" className="text-xl font-bold text-white">{authMode === 'signup' ? 'បង្កើតគណនីអតិថិជន' : authMode === 'forgot' ? 'ស្តារពាក្យសម្ងាត់' : authMode === 'reset' ? 'កំណត់ពាក្យសម្ងាត់ថ្មី' : authMode === 'verify' ? 'កំពុងផ្ទៀងផ្ទាត់អ៊ីមែល' : authMode === 'magic' ? 'ចូលតាមអ៊ីមែល' : 'ចូលគណនី'}</h2>
               <p className="mt-1 text-xs text-slate-400">ចូលគណនីដើម្បីទិញ និងរក្សាសិទ្ធិមើលរឿងរបស់អ្នក។</p>
             </div>
             {['forgot', 'reset', 'magic'].includes(authMode) && <form onSubmit={submitAuth} className="space-y-3">
-              {['forgot', 'magic'].includes(authMode) && <input required type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Email address" className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white" />}
-              {authMode === 'reset' && <input required type="password" minLength={8} maxLength={128} autoComplete="new-password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="New password (at least 8 characters)" className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white" />}
+              {['forgot', 'magic'].includes(authMode) && <input required type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Email address" className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-base text-white" />}
+              {authMode === 'reset' && <input required type="password" minLength={8} maxLength={128} autoComplete="new-password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="New password (at least 8 characters)" className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-base text-white" />}
               {authNotice && <p className="text-sm text-emerald-300" role="status">{authNotice}</p>}
               {authError && <p className="text-sm text-red-300" role="alert">{authError}</p>}
-              <button type="submit" disabled={isSubmittingAuth} className="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white disabled:opacity-50">{isSubmittingAuth ? 'Please wait…' : authMode === 'forgot' ? 'Send reset link' : authMode === 'magic' ? 'Send sign-in link' : 'Save new password'}</button>
+              <button type="submit" disabled={isSubmittingAuth} className="min-h-12 w-full rounded-xl bg-emerald-600 py-3 font-bold text-white disabled:opacity-50">{isSubmittingAuth ? 'Please wait…' : authMode === 'forgot' ? 'Send reset link' : authMode === 'magic' ? 'Send sign-in link' : 'Save new password'}</button>
             </form>}
             {!['forgot', 'reset', 'magic', 'verify', 'verifyLogin'].includes(authMode) && <form onSubmit={submitAuth} className="space-y-3">
-              {authMode === 'signup' && <input required maxLength={80} value={authName} onChange={(event) => setAuthName(event.target.value)} placeholder="ឈ្មោះរបស់អ្នក" className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white outline-none focus:border-emerald-500" />}
-              <input required type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="អ៊ីមែល" className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white outline-none focus:border-emerald-500" />
-              <input required type="password" minLength={8} maxLength={128} autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="ពាក្យសម្ងាត់ (យ៉ាងតិច ៨ តួ)" className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white outline-none focus:border-emerald-500" />
+              {authMode === 'signup' && <input required maxLength={80} value={authName} onChange={(event) => setAuthName(event.target.value)} placeholder="ឈ្មោះរបស់អ្នក" className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-base text-white outline-none focus:border-emerald-500" />}
+              <input required type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="អ៊ីមែល" className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-base text-white outline-none focus:border-emerald-500" />
+              <input required type="password" minLength={8} maxLength={128} autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="ពាក្យសម្ងាត់ (យ៉ាងតិច ៨ តួ)" className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-base text-white outline-none focus:border-emerald-500" />
               {authNotice && <p className="text-sm text-emerald-300" role="status">{authNotice}</p>}
               {authError && <p className="text-sm text-red-300" role="alert">{authError}</p>}
-              <button type="submit" disabled={isSubmittingAuth} className="w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500 disabled:opacity-50">{isSubmittingAuth ? 'កំពុងដំណើរការ…' : authMode === 'signup' ? 'បង្កើតគណនី' : 'ចូលគណនី'}</button>
+              <button type="submit" disabled={isSubmittingAuth} className="min-h-12 w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500 disabled:opacity-50">{isSubmittingAuth ? 'កំពុងដំណើរការ…' : authMode === 'signup' ? 'បង្កើតគណនី' : 'ចូលគណនី'}</button>
             </form>}
             {['login', 'signup'].includes(authMode) && <>
               <div className="flex items-center gap-3 text-[10px] uppercase tracking-widest text-slate-500"><span className="h-px flex-1 bg-slate-700" />or continue with<span className="h-px flex-1 bg-slate-700" /></div>
-              <a href="/api/auth/google" className="flex w-full items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white py-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-100">
+              <a href="/api/auth/google" className="flex min-h-12 w-full items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white py-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-100">
                 <span className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 text-base font-bold text-blue-600">G</span>
                 Continue with Gmail
               </a>
             </>}
-            <button type="button" onClick={() => { setAuthMode(authMode === 'signup' ? 'login' : 'signup'); setAuthError(''); }} className="w-full text-sm text-slate-300 hover:text-white">
+            <button type="button" onClick={() => { setAuthMode(authMode === 'signup' ? 'login' : 'signup'); setAuthError(''); }} className="min-h-11 w-full text-sm text-slate-300 hover:text-white">
               {authMode === 'signup' ? 'មានគណនីរួចហើយ? ចូលគណនី' : 'មិនទាន់មានគណនី? បង្កើតគណនី'}
             </button>
             {['forgot', 'reset', 'magic'].includes(authMode) && <button type="button" onClick={() => { setAuthMode('login'); setAuthNotice(''); setAuthError(''); }} className="w-full text-sm text-slate-400 hover:text-white">Back to sign in</button>}
