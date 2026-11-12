@@ -7,6 +7,7 @@ import { loadAppState, saveAppState } from './persistedState.js';
 
 const POSTER_UPLOAD_ORIGIN = import.meta.env.PROD ? 'https://khmer-ai-cinema.onrender.com' : '';
 const MAX_POSTER_BYTES = 10 * 1024 * 1024;
+const MAX_PAYMENT_RECEIPT_BYTES = 4 * 1024 * 1024;
 
 export default function App() {
   const [movies, setMovies] = useState([]);
@@ -21,6 +22,7 @@ export default function App() {
   const [watchProgress, setWatchProgress] = useState([]);
   const hasAuthenticatedAccount = useRef(false);
   const posterFileInput = useRef(null);
+  const paymentReceiptInput = useRef(null);
   const [detailsMovie, setDetailsMovie] = useState(null);
   const [profileSyncError, setProfileSyncError] = useState('');
   const [isStorageReady, setIsStorageReady] = useState(false);
@@ -49,6 +51,8 @@ export default function App() {
   const [telegramUsername, setTelegramUsername] = useState('');
   const [paymentStatusMessage, setPaymentStatusMessage] = useState('');
   const [isCreatingOrder, setIsCreatingOrder] = useState(false);
+  const [paymentReceiptFile, setPaymentReceiptFile] = useState(null);
+  const [isSubmittingReceipt, setIsSubmittingReceipt] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [paymentOrders, setPaymentOrders] = useState([]);
@@ -344,6 +348,8 @@ export default function App() {
   const confirmPayment = async () => {
     setTelegramNoticeError('');
     setPaymentStatusMessage('');
+    setPaymentReceiptFile(null);
+    if (paymentReceiptInput.current) paymentReceiptInput.current.value = '';
     setIsCreatingOrder(true);
     try {
       const response = await fetch('/api/payment-intent', {
@@ -369,6 +375,60 @@ export default function App() {
     }
   };
 
+  const handlePaymentReceiptChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(file.type)) {
+      setPaymentReceiptFile(null);
+      setPaymentStatusMessage('សូមជ្រើសរើសរូបវិក្កយបត្រ JPEG, PNG, WebP ឬ HEIC។');
+      event.target.value = '';
+      return;
+    }
+    if (file.size > MAX_PAYMENT_RECEIPT_BYTES) {
+      setPaymentReceiptFile(null);
+      setPaymentStatusMessage('រូបវិក្កយបត្រត្រូវមានទំហំមិនលើស 4 MB។');
+      event.target.value = '';
+      return;
+    }
+    setPaymentReceiptFile(file);
+    setPaymentStatusMessage('');
+  };
+
+  const submitPaymentReceipt = async () => {
+    if (!paymentOrder || !paymentReceiptFile) {
+      setPaymentStatusMessage('សូមជ្រើសរើសរូបវិក្កយបត្រមុនពេលផ្ញើ។');
+      return;
+    }
+    setIsSubmittingReceipt(true);
+    setPaymentStatusMessage('');
+    try {
+      const query = new URLSearchParams({ orderId: paymentOrder.orderId, claimCode: paymentOrder.claimCode });
+      const response = await fetch(`/api/payment-proof?${query}`, {
+        method: 'POST',
+        headers: { 'Content-Type': paymentReceiptFile.type },
+        body: paymentReceiptFile,
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'មិនអាចផ្ញើវិក្កយបត្របានទេ។');
+      setPaymentOrder((current) => ({
+        ...current,
+        receiptSubmitted: true,
+        receiptSubmittedAt: result.receiptSubmittedAt,
+        receiptTelegramNotificationSent: result.notificationSent,
+        receiptTelegramNotificationError: result.notificationError,
+      }));
+      setPaymentReceiptFile(null);
+      if (paymentReceiptInput.current) paymentReceiptInput.current.value = '';
+      setPaymentStatusMessage(result.notificationSent
+        ? 'បានផ្ញើវិក្កយបត្រទៅ Admin រួចហើយ។ Telegram បានទទួលការជូនដំណឹង។ សូមរង់ចាំការផ្ទៀងផ្ទាត់។'
+        : `វិក្កយបត្របានរក្សាទុកហើយ ប៉ុន្តែ Telegram alert មិនបានផ្ញើ៖ ${result.notificationError || 'សូមប្រាប់ Admin។'}`);
+    } catch (error) {
+      setPaymentStatusMessage(error instanceof Error ? error.message : 'មិនអាចផ្ញើវិក្កយបត្របានទេ។ សូមសាកម្ដងទៀត។');
+    } finally {
+      setIsSubmittingReceipt(false);
+    }
+  };
+
   const checkPaymentStatus = async () => {
     if (!paymentOrder) return;
     try {
@@ -376,7 +436,14 @@ export default function App() {
       const response = await fetch(`/api/payment-status?${query}`);
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not check order');
-      setPaymentOrder((current) => ({ ...current, status: result.status, deliveryStatus: result.deliveryStatus }));
+      setPaymentOrder((current) => ({
+        ...current,
+        status: result.status,
+        requiresReceipt: result.requiresReceipt,
+        deliveryStatus: result.deliveryStatus,
+        receiptSubmitted: result.receiptSubmitted,
+        receiptSubmittedAt: result.receiptSubmittedAt,
+      }));
       if (result.status === 'approved') {
         setPayStep(3);
       } else {
@@ -485,7 +552,13 @@ export default function App() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not send the Telegram alert.');
       setPaymentOrders((orders) => orders.map((order) => order.id === orderId
-        ? { ...order, telegramNotificationSent: true, telegramNotificationError: '' }
+        ? {
+          ...order,
+          telegramNotificationSent: true,
+          telegramNotificationError: '',
+          receiptTelegramNotificationSent: order.receiptPath ? true : order.receiptTelegramNotificationSent,
+          receiptTelegramNotificationError: '',
+        }
         : order));
     } catch (error) {
       setAdminOrderError(error instanceof Error ? error.message : 'Could not send the Telegram alert.');
@@ -968,7 +1041,10 @@ export default function App() {
                 </div>
               </section>}
               <div>
-                <h4 className="pb-2 text-sm font-bold text-white">Movie orders · ABA / Telegram</h4>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-sm font-bold text-white">Movie orders · ABA / Telegram</h4>
+                  <button type="button" onClick={loadPaymentOrders} className="min-h-10 rounded-lg bg-slate-700 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-600">Refresh orders</button>
+                </div>
                 <p className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-100">១. ពិនិត្យប្រាក់ ABA ហើយចុច “បញ្ជាក់ប្រាក់”។ ២. ផ្ញើភាពយន្តទៅ Telegram username របស់អតិថិជនដោយដៃ។ ៣. បន្ទាប់មកចុច “បានផ្ញើ”។</p>
                 <div className="mb-3 space-y-2 rounded-lg border border-slate-700 bg-slate-950 p-3">
                   <div className="flex flex-wrap items-center gap-3">
@@ -995,14 +1071,26 @@ export default function App() {
                               ? `Telegram alert failed: ${order.telegramNotificationError}`
                               : 'Telegram alert status unavailable'}
                         </p>
+                        {order.requiresReceipt && (order.receiptUrl
+                          ? <a href={order.receiptUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center text-amber-300 underline underline-offset-2">មើលវិក្កយបត្របង់ប្រាក់</a>
+                          : <p className="text-amber-300">កំពុងរង់ចាំអតិថិជនបញ្ជូនវិក្កយបត្រ</p>)}
+                        {order.receiptPath && <p className={order.receiptTelegramNotificationSent ? 'text-emerald-300' : 'text-red-300'}>
+                          {order.receiptTelegramNotificationSent
+                            ? 'Telegram receipt alert sent'
+                            : order.receiptTelegramNotificationError
+                              ? `Receipt alert failed: ${order.receiptTelegramNotificationError}`
+                              : 'Receipt uploaded; Telegram alert status unavailable'}
+                        </p>}
                         <p className="break-all text-xs text-slate-500">Order {order.id} · Code {order.claimCode} · {new Date(order.createdAt).toLocaleString()}</p>
                       </div>
                       <div className="flex shrink-0 flex-col gap-2">
-                        {!order.telegramNotificationSent && <button type="button" onClick={() => retryTelegramNotification(order.id)} disabled={telegramRetryingOrderId === order.id} className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-bold text-white hover:bg-slate-600 disabled:opacity-50">
+                        {(!order.telegramNotificationSent || (order.receiptPath && !order.receiptTelegramNotificationSent)) && <button type="button" onClick={() => retryTelegramNotification(order.id)} disabled={telegramRetryingOrderId === order.id} className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-bold text-white hover:bg-slate-600 disabled:opacity-50">
                           {telegramRetryingOrderId === order.id ? 'កំពុងផ្ញើ…' : 'ព្យាយាមផ្ញើដំណឹងម្ដងទៀត'}
                         </button>}
                         {order.status === 'pending'
-                          ? <button type="button" onClick={() => approvePaymentOrder(order.id)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-500">បញ្ជាក់ប្រាក់ ABA</button>
+                          ? order.amount === 'FREE' || !order.requiresReceipt || order.receiptUrl
+                            ? <button type="button" onClick={() => approvePaymentOrder(order.id)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-500">បញ្ជាក់ប្រាក់ ABA</button>
+                            : <span className="rounded-lg bg-slate-800 px-4 py-2 text-center text-xs text-slate-400">រង់ចាំវិក្កយបត្រ</span>
                           : <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-center text-xs font-semibold text-emerald-300">{order.amount === 'FREE' ? 'Free · រួចរាល់សម្រាប់ផ្ញើ' : 'បានបញ្ជាក់ប្រាក់'}</span>}
                         {order.status === 'approved' && order.deliveryStatus !== 'sent'
                           ? <button type="button" onClick={() => markOrderDelivered(order.id)} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white hover:bg-sky-500">បានផ្ញើតាម Telegram</button>
@@ -1091,7 +1179,7 @@ export default function App() {
                     <input
                       type="file"
                       ref={posterFileInput}
-                      accept="image/jpeg,image/png,image/webp"
+                      accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
                       onChange={handlePosterFileChange}
                       className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-amber-500 file:px-3 file:py-2 file:font-semibold file:text-slate-950"
                     />
@@ -1290,6 +1378,30 @@ export default function App() {
                 </div>
                 <p className="text-xs text-slate-400">ចំនួនប្រាក់៖ {paymentOrder?.amount || pendingMovie?.price} · សូមពិនិត្យឈ្មោះអ្នកទទួល CHUMCHEAT HAN មុនបញ្ជាក់។</p>
                 <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">បន្ទាប់ពីផ្ទៀងផ្ទាត់ប្រាក់រួច ម្ចាស់គេហទំព័រនឹងផ្ញើភាពយន្តទៅ Telegram ដោយដៃ។ មិនមានការចាក់វីដេអូនៅលើគេហទំព័រនេះទេ។</p>
+                {paymentOrder?.amount !== 'FREE' && (paymentOrder?.receiptSubmitted
+                  ? <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200" role="status">បានទទួលវិក្កយបត្ររបស់អ្នកហើយ។ សូមរង់ចាំ Admin ផ្ទៀងផ្ទាត់ប្រាក់។</p>
+                  : <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-950 p-4 text-left">
+                    <div>
+                      <h4 className="text-sm font-bold text-white">បង់រួចហើយ? បញ្ជូនវិក្កយបត្រសម្រាប់ផ្ទៀងផ្ទាត់</h4>
+                      <p className="mt-1 text-xs leading-5 text-slate-400">ជ្រើសរើសរូបបង្កាន់ដៃ ABA ឲ្យឃើញចំនួនប្រាក់ និងលេខប្រតិបត្តិការ។ JPEG, PNG, WebP ឬ HEIC មិនលើស 4 MB។</p>
+                    </div>
+                    <input
+                      ref={paymentReceiptInput}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={handlePaymentReceiptChange}
+                      className="block min-h-11 w-full text-sm text-slate-300 file:mr-3 file:min-h-11 file:rounded-lg file:border-0 file:bg-slate-700 file:px-3 file:text-sm file:font-semibold file:text-white hover:file:bg-slate-600"
+                    />
+                    {paymentReceiptFile && <p className="break-all text-xs text-slate-300">{paymentReceiptFile.name} · {(paymentReceiptFile.size / 1024 / 1024).toFixed(2)} MB</p>}
+                    <button
+                      type="button"
+                      onClick={submitPaymentReceipt}
+                      disabled={!paymentReceiptFile || isSubmittingReceipt}
+                      className="min-h-12 w-full rounded-xl bg-sky-600 px-4 py-3 font-bold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isSubmittingReceipt ? 'កំពុងផ្ញើវិក្កយបត្រ…' : 'ខ្ញុំបានបង់ប្រាក់ហើយ · ផ្ញើវិក្កយបត្រ'}
+                    </button>
+                  </div>)}
                 {paymentStatusMessage && <p className="text-xs text-amber-200" role="status">{paymentStatusMessage}</p>}
                 <button type="button" onClick={checkPaymentStatus} className="min-h-12 w-full rounded-xl bg-emerald-600 py-3 font-bold text-white hover:bg-emerald-500">ពិនិត្យស្ថានភាពការទូទាត់</button>
                 <button type="button" onClick={() => { setShowPayModal(false); setPayStep(1); }} className="min-h-12 w-full rounded-xl bg-slate-700 py-3 font-bold text-white hover:bg-slate-600">បិទ</button>

@@ -25,7 +25,7 @@ Keep the bot token, Resend API key and admin password private. `.env` is ignored
 1. The customer creates an account with a name, email and password, then opens the one-hour verification link sent by email before signing in.
 2. Paid films and VIP checkout require an account. Free films remain available without an account.
 3. The order is linked to the signed-in account and includes the customer's Telegram username. Paid movies create an ABA payment request; Free movies do not require payment.
-4. When `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured, the owner receives the customer, movie, amount and order details in Telegram. The owner sends the movie to the customer manually.
+4. After paying, upload a JPEG, PNG, WebP, or HEIC receipt (up to 4 MB) in the checkout dialog. The order and receipt are saved, and the owner receives a Telegram alert with a secure receipt link. Receipt images are stored in the private Supabase bucket `payment-receipts`; the server creates this bucket automatically when the first receipt is submitted.
 
 ## Admin flow
 
@@ -33,9 +33,9 @@ Keep the bot token, Resend API key and admin password private. `.env` is ignored
 2. In **Movie orders · ABA / Telegram**, send a test message to verify the Telegram bot configuration.
 3. If the test fails, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the Render service's Environment settings, then restart/redeploy the service and test again. Never put these values in the frontend or share them publicly.
 4. Check each order's Telegram alert status. Failed alerts include an error and can be retried from the order list.
-5. For paid movies, verify the amount and transaction in ABA and approve only the matching request. Send the movie to the customer's Telegram username manually, then mark the order as sent. Free requests can be sent without ABA approval.
+5. For paid movies, open the receipt link shown in the order, verify the amount and transaction in ABA, and approve only the matching request. Paid orders cannot be approved before a receipt is submitted. Send the movie to the customer's Telegram username manually, then mark the order as sent. Free requests can be sent without ABA approval.
 
-The API stores account password hashes, orders, sessions, catalog records and access grants in Supabase PostgreSQL using the `DATABASE_URL` environment variable. Uploaded posters are kept in the public Supabase Storage bucket named `movie-posters`. Passwords and email action tokens are never stored as plain text. If an existing SQLite database file is present on first startup with PostgreSQL configured, its application state is copied into the new database.
+The API stores account password hashes, orders, sessions, catalog records and access grants in Supabase PostgreSQL using the `DATABASE_URL` environment variable. Uploaded posters are kept in the public Supabase Storage bucket named `movie-posters`; payment receipts use a separate private bucket named `payment-receipts` and are only exposed through expiring signed links. Passwords and email action tokens are never stored as plain text. If an existing SQLite database file is present on first startup with PostgreSQL configured, its application state is copied into the new database.
 
 Customers can use “Forgot your password?” to receive a one-hour password reset link. Verification and reset links require `RESEND_API_KEY` and a verified `EMAIL_FROM` sender. To deploy, create the Supabase project and public poster bucket first, then set `DATABASE_URL`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` as secrets in the Render dashboard before deploying. Create/verify your sender domain in Resend and use its sender address for `EMAIL_FROM`. Never expose the service-role key in the browser or in Vercel settings.
 

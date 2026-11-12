@@ -1,4 +1,4 @@
-const MAX_REQUEST_BYTES = 1024 * 1024;
+const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
   'content-encoding',
@@ -32,7 +32,7 @@ const readRequestBody = (request) => new Promise((resolve, reject) => {
     if (!tooLarge) chunks.push(chunk);
   });
   request.on('end', () => {
-    if (tooLarge) reject(new Error('Request body is too large.'));
+    if (tooLarge) reject(new Error('Request body must be 4 MB or smaller.'));
     else resolve(Buffer.concat(chunks));
   });
   request.on('error', reject);
@@ -81,7 +81,7 @@ export default async function handler(request, response) {
     try {
       body = await readRequestBody(request);
     } catch (error) {
-      return sendJson(response, error.message === 'Request body is too large.' ? 413 : 400, error.message);
+      return sendJson(response, error.message === 'Request body must be 4 MB or smaller.' ? 413 : 400, error.message);
     }
   }
 

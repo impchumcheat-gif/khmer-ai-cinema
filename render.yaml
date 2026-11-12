@@ -32,6 +32,8 @@ services:
         sync: false
       - key: SUPABASE_POSTER_BUCKET
         value: movie-posters
+      - key: SUPABASE_PAYMENT_RECEIPT_BUCKET
+        value: payment-receipts
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID

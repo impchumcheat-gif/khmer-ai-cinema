@@ -11,6 +11,7 @@ const scrypt = promisify(scryptCallback);
 const DATA_FILE = resolve(process.cwd(), 'server/data/app-data.sqlite');
 const POSTER_DIR = resolve(process.cwd(), 'server/data/posters');
 const MAX_POSTER_BYTES = 10 * 1024 * 1024;
+const MAX_PAYMENT_RECEIPT_BYTES = 4 * 1024 * 1024;
 const { Pool } = pg;
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 const EMAIL_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -46,7 +47,7 @@ const readJson = (request, maxBytes = 4096) => new Promise((resolveBody, rejectB
   request.on('error', rejectBody);
 });
 
-const readBuffer = (request, maxBytes) => new Promise((resolveBody, rejectBody) => {
+const readBuffer = (request, maxBytes, tooLargeMessage) => new Promise((resolveBody, rejectBody) => {
   const chunks = [];
   let bytes = 0;
   let tooLarge = false;
@@ -59,7 +60,7 @@ const readBuffer = (request, maxBytes) => new Promise((resolveBody, rejectBody) 
     if (!tooLarge) chunks.push(chunk);
   });
   request.on('end', () => {
-    if (tooLarge) rejectBody(new Error('Poster exceeds the 10 MB upload limit.'));
+    if (tooLarge) rejectBody(new Error(tooLargeMessage));
     else resolveBody(Buffer.concat(chunks));
   });
   request.on('error', rejectBody);
@@ -73,6 +74,78 @@ const allowedPosterOrigin = (origin) => {
 };
 
 const posterUrl = (id) => `${(process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '')}/api/posters/${id}`;
+const paymentReceiptBucket = () => process.env.SUPABASE_PAYMENT_RECEIPT_BUCKET || 'payment-receipts';
+const supabaseStorageHeaders = () => ({
+  apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+});
+const storageObjectPath = (path) => path.split('/').map(encodeURIComponent).join('/');
+
+const ensurePaymentReceiptBucket = async () => {
+  const storageUrl = process.env.SUPABASE_URL?.replace(/\/+$/, '');
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!storageUrl || !serviceKey) throw new Error('Secure receipt storage is not configured on the server.');
+  const bucket = paymentReceiptBucket();
+  const headers = supabaseStorageHeaders();
+  const bucketUrl = `${storageUrl}/storage/v1/bucket/${encodeURIComponent(bucket)}`;
+  const existing = await fetch(bucketUrl, { headers, signal: AbortSignal.timeout(10000) });
+  if (existing.ok) {
+    const bucketSettings = await existing.json();
+    if (bucketSettings.public !== false) throw new Error('The payment receipt bucket must be private.');
+    return { storageUrl, bucket, headers };
+  }
+  if (existing.status !== 404) throw new Error(`Could not check the private receipt bucket (HTTP ${existing.status}).`);
+
+  const created = await fetch(`${storageUrl}/storage/v1/bucket`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: bucket,
+      name: bucket,
+      public: false,
+      file_size_limit: MAX_PAYMENT_RECEIPT_BYTES,
+      allowed_mime_types: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'],
+    }),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!created.ok && created.status !== 409) {
+    throw new Error(`Could not create the private receipt bucket (HTTP ${created.status}).`);
+  }
+  return { storageUrl, bucket, headers };
+};
+
+const createPaymentReceiptUrl = async (path, expiresIn = 60 * 60) => {
+  const { storageUrl, bucket, headers } = await ensurePaymentReceiptBucket();
+  const signed = await fetch(
+    `${storageUrl}/storage/v1/object/sign/${encodeURIComponent(bucket)}/${storageObjectPath(path)}`,
+    {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiresIn }),
+      signal: AbortSignal.timeout(10000),
+    },
+  );
+  if (!signed.ok) throw new Error(`Could not create a secure receipt link (HTTP ${signed.status}).`);
+  const result = await signed.json();
+  if (typeof result.signedURL !== 'string' || !result.signedURL) throw new Error('Storage did not return a secure receipt link.');
+  return result.signedURL.startsWith('http')
+    ? result.signedURL
+    : `${storageUrl}/storage/v1${result.signedURL.startsWith('/') ? result.signedURL : `/${result.signedURL}`}`;
+};
+
+const uploadPaymentReceipt = async (path, contents, mimeType) => {
+  const { storageUrl, bucket, headers } = await ensurePaymentReceiptBucket();
+  const uploaded = await fetch(
+    `${storageUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${storageObjectPath(path)}`,
+    {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': mimeType, 'x-upsert': 'false' },
+      body: contents,
+      signal: AbortSignal.timeout(30000),
+    },
+  );
+  if (!uploaded.ok) throw new Error(`Could not securely store the payment receipt (HTTP ${uploaded.status}).`);
+};
 
 const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -101,8 +174,8 @@ const sendTelegramMessage = async (text) => {
   }
 };
 
-const orderTelegramMessage = (order) => [
-  '<b>New movie order</b>',
+const orderTelegramMessage = (order, receiptUrl = '') => [
+  order.receiptPath ? '<b>Payment receipt submitted</b>' : '<b>New movie order</b>',
   `Customer: ${escapeHtml(order.customerName)} (${escapeHtml(order.customerEmail)})`,
   `Customer Telegram: ${escapeHtml(order.telegramUsername)}`,
   `Movie: ${escapeHtml(order.item)}`,
@@ -111,7 +184,10 @@ const orderTelegramMessage = (order) => [
   `Claim code: <code>${order.claimCode}</code>`,
   order.amount === 'FREE'
     ? 'Status: Free request. Send the movie to the customer on Telegram.'
-    : 'Status: Payment pending. Verify ABA, then send the movie to the customer on Telegram.',
+    : order.receiptPath
+      ? 'Status: Customer submitted payment proof. Verify ABA, then send the movie to the customer on Telegram.'
+      : 'Status: Payment pending. Verify ABA, then send the movie to the customer on Telegram.',
+  receiptUrl ? `Payment receipt: <a href="${escapeHtml(receiptUrl)}">view securely</a>` : '',
 ].join('\n');
 
 let database;
@@ -267,6 +343,7 @@ await initializeDatabase();
 
 const authAttempts = new Map();
 const paymentAttempts = new Map();
+const paymentReceiptAttempts = new Map();
 const emailAttempts = new Map();
 const allowEmailAction = (request) => {
   const ip = request.socket.remoteAddress || 'unknown';
@@ -341,7 +418,7 @@ const server = createServer(async (request, response) => {
       const declaredLength = Number(request.headers['content-length'] || 0);
       if (declaredLength > MAX_POSTER_BYTES) return json(response, 413, { error: 'Poster exceeds the 10 MB upload limit.' }, uploadHeaders);
       let contents;
-      try { contents = await readBuffer(request, MAX_POSTER_BYTES); }
+      try { contents = await readBuffer(request, MAX_POSTER_BYTES, 'Poster exceeds the 10 MB upload limit.'); }
       catch (error) { return json(response, 413, { error: error.message }, uploadHeaders); }
       if (!contents.length) return json(response, 400, { error: 'The poster file is empty.' }, uploadHeaders);
 
@@ -805,6 +882,7 @@ const server = createServer(async (request, response) => {
         item: movie.title, amount: movie.price, movieId: movie.id,
         telegramUsername: `@${telegramUsername}`,
         status: movie.isPaid ? 'pending' : 'approved',
+        requiresReceipt: movie.isPaid,
         deliveryStatus: 'pending',
         telegramNotificationSent: false,
         createdAt: new Date().toISOString(),
@@ -823,6 +901,7 @@ const server = createServer(async (request, response) => {
         orderId: order.id,
         claimCode: order.claimCode,
         status: order.status,
+        requiresReceipt: order.requiresReceipt,
         deliveryStatus: order.deliveryStatus,
         item: order.item,
         amount: order.amount,
@@ -841,7 +920,95 @@ const server = createServer(async (request, response) => {
       const db = await loadDb();
       const order = db.orders.find((entry) => entry.id === orderId && entry.claimCode === claimCode && entry.userId === user.id);
       if (!order) return json(response, 404, { error: 'Order not found for this account.' });
-      return json(response, 200, { status: order.status, deliveryStatus: order.deliveryStatus || 'pending', item: order.item, amount: order.amount, movieId: order.movieId, telegramUsername: order.telegramUsername });
+      return json(response, 200, {
+        status: order.status,
+        requiresReceipt: Boolean(order.requiresReceipt),
+        deliveryStatus: order.deliveryStatus || 'pending',
+        item: order.item,
+        amount: order.amount,
+        movieId: order.movieId,
+        telegramUsername: order.telegramUsername,
+        receiptSubmitted: Boolean(order.receiptPath),
+        receiptSubmittedAt: order.receiptSubmittedAt || null,
+      });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/payment-proof') {
+      const user = await getUser(request);
+      if (!user || !user.verified) return json(response, 401, { error: 'Sign in with a verified account to submit a payment receipt.' });
+      const { orderId, claimCode } = Object.fromEntries(url.searchParams);
+      if (!/^[\w-]{36}$/.test(orderId || '') || !/^[A-F0-9]{8}$/.test(claimCode || '')) {
+        return json(response, 400, { error: 'A valid order and claim code are required.' });
+      }
+
+      const db = await loadDb();
+      const order = db.orders.find((entry) => entry.id === orderId && entry.claimCode === claimCode && entry.userId === user.id);
+      if (!order) return json(response, 404, { error: 'Order not found for this account.' });
+      if (order.amount === 'FREE') return json(response, 409, { error: 'Free requests do not need a payment receipt.' });
+      if (order.status !== 'pending') return json(response, 409, { error: 'This order is no longer waiting for payment review.' });
+
+      const lastAttempt = paymentReceiptAttempts.get(user.id) || 0;
+      if (Date.now() - lastAttempt < 5000) return json(response, 429, { error: 'Please wait before submitting another receipt.' });
+      paymentReceiptAttempts.set(user.id, Date.now());
+      const mimeType = (request.headers['content-type'] || '').split(';')[0].toLowerCase();
+      const extensions = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/heic': '.heic', 'image/heif': '.heif' };
+      if (!extensions[mimeType]) return json(response, 415, { error: 'Choose a JPEG, PNG, WebP, or HEIC payment receipt.' });
+      if (Number(request.headers['content-length'] || 0) > MAX_PAYMENT_RECEIPT_BYTES) {
+        return json(response, 413, { error: 'Payment receipt must be 4 MB or smaller.' });
+      }
+
+      let contents;
+      try {
+        contents = await readBuffer(request, MAX_PAYMENT_RECEIPT_BYTES, 'Payment receipt must be 4 MB or smaller.');
+      } catch (error) {
+        return json(response, 413, { error: error.message });
+      }
+      if (!contents.length) return json(response, 400, { error: 'Select a payment receipt image first.' });
+      const signatures = {
+        'image/jpeg': contents[0] === 0xff && contents[1] === 0xd8 && contents[2] === 0xff,
+        'image/png': contents.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+        'image/webp': contents.toString('ascii', 0, 4) === 'RIFF' && contents.toString('ascii', 8, 12) === 'WEBP',
+        'image/heic': contents.toString('ascii', 4, 8) === 'ftyp' && ['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(contents.toString('ascii', 8, 12)),
+        'image/heif': contents.toString('ascii', 4, 8) === 'ftyp' && ['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(contents.toString('ascii', 8, 12)),
+      };
+      if (!signatures[mimeType]) return json(response, 415, { error: 'The selected file does not match its image type.' });
+
+      const path = `${order.id}/${randomUUID()}${extensions[mimeType]}`;
+      try {
+        await uploadPaymentReceipt(path, contents, mimeType);
+        const receiptUrl = await createPaymentReceiptUrl(path, 7 * 24 * 60 * 60);
+        const receiptSubmittedAt = new Date().toISOString();
+        await updateDb((latest) => {
+          const currentOrder = latest.orders.find((entry) => entry.id === order.id && entry.userId === user.id);
+          if (!currentOrder || currentOrder.status !== 'pending') throw new Error('This order is no longer waiting for payment review.');
+          currentOrder.receiptPath = path;
+          currentOrder.receiptSubmittedAt = receiptSubmittedAt;
+          currentOrder.receiptTelegramNotificationSent = false;
+          currentOrder.receiptTelegramNotificationError = '';
+        });
+
+        const notification = await sendTelegramMessage(orderTelegramMessage({
+          ...order,
+          receiptPath: path,
+          receiptSubmittedAt,
+        }, receiptUrl));
+        await updateDb((latest) => {
+          const currentOrder = latest.orders.find((entry) => entry.id === order.id && entry.userId === user.id);
+          if (!currentOrder) throw new Error('Order not found after receipt submission.');
+          currentOrder.receiptTelegramNotificationSent = notification.sent;
+          currentOrder.receiptTelegramNotificationError = notification.error;
+        });
+        return json(response, 200, {
+          receiptSubmitted: true,
+          receiptSubmittedAt,
+          notificationSent: notification.sent,
+          notificationError: notification.error,
+        });
+      } catch (error) {
+        return json(response, 502, {
+          error: error instanceof Error ? error.message : 'Could not submit the payment receipt.',
+        });
+      }
     }
 
     if (url.pathname.startsWith('/api/admin/')) {
@@ -915,15 +1082,24 @@ const server = createServer(async (request, response) => {
         });
       }
       if (request.method === 'GET' && url.pathname === '/api/admin/orders') {
-        return json(response, 200, db.orders.slice().reverse().map(({ userId: _userId, ...order }) => order));
+        const orders = await Promise.all(db.orders.slice().reverse().map(async ({ userId: _userId, ...order }) => ({
+          ...order,
+          receiptUrl: order.receiptPath ? await createPaymentReceiptUrl(order.receiptPath) : '',
+        })));
+        return json(response, 200, orders);
       }
       const notificationMatch = url.pathname.match(/^\/api\/admin\/orders\/([\w-]+)\/notify$/);
       if (request.method === 'POST' && notificationMatch) {
         const order = db.orders.find((entry) => entry.id === notificationMatch[1]);
         if (!order) return json(response, 404, { error: 'Order not found.' });
-        const notification = await sendTelegramMessage(orderTelegramMessage(order));
+        const receiptUrl = order.receiptPath ? await createPaymentReceiptUrl(order.receiptPath, 7 * 24 * 60 * 60) : '';
+        const notification = await sendTelegramMessage(orderTelegramMessage(order, receiptUrl));
         order.telegramNotificationSent = notification.sent;
         order.telegramNotificationError = notification.error;
+        if (order.receiptPath) {
+          order.receiptTelegramNotificationSent = notification.sent;
+          order.receiptTelegramNotificationError = notification.error;
+        }
         await updateDb((latest) => {
           const index = latest.orders.findIndex((entry) => entry.id === order.id);
           if (index >= 0) latest.orders[index] = order;
@@ -950,6 +1126,7 @@ const server = createServer(async (request, response) => {
         if (!order) return json(response, 404, { error: 'Order not found.' });
         if (order.amount === 'FREE') return json(response, 409, { error: 'Free orders do not need payment approval.' });
         if (order.status !== 'pending') return json(response, 409, { error: 'This order has already been reviewed.' });
+        if (order.requiresReceipt && !order.receiptPath) return json(response, 409, { error: 'The customer must submit a payment receipt before approval.' });
         order.status = 'approved';
         order.approvedAt = new Date().toISOString();
         await updateDb((latest) => {
