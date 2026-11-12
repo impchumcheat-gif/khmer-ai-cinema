@@ -87,14 +87,21 @@ const ensurePaymentReceiptBucket = async () => {
   if (!storageUrl || !serviceKey) throw new Error('Secure receipt storage is not configured on the server.');
   const bucket = paymentReceiptBucket();
   const headers = supabaseStorageHeaders();
-  const bucketUrl = `${storageUrl}/storage/v1/bucket/${encodeURIComponent(bucket)}`;
-  const existing = await fetch(bucketUrl, { headers, signal: AbortSignal.timeout(10000) });
-  if (existing.ok) {
-    const bucketSettings = await existing.json();
-    if (bucketSettings.public !== false) throw new Error('The payment receipt bucket must be private.');
+  const listBuckets = async () => {
+    const response = await fetch(`${storageUrl}/storage/v1/bucket`, {
+      headers,
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error(`Could not list Supabase Storage buckets (HTTP ${response.status}).`);
+    const buckets = await response.json();
+    if (!Array.isArray(buckets)) throw new Error('Supabase Storage returned an invalid bucket list.');
+    return buckets;
+  };
+  const existing = (await listBuckets()).find((entry) => entry.id === bucket);
+  if (existing) {
+    if (existing.public !== false) throw new Error('The payment receipt bucket must be private.');
     return { storageUrl, bucket, headers };
   }
-  if (existing.status !== 404) throw new Error(`Could not check the private receipt bucket (HTTP ${existing.status}).`);
 
   const created = await fetch(`${storageUrl}/storage/v1/bucket`, {
     method: 'POST',
@@ -110,6 +117,10 @@ const ensurePaymentReceiptBucket = async () => {
   });
   if (!created.ok && created.status !== 409) {
     throw new Error(`Could not create the private receipt bucket (HTTP ${created.status}).`);
+  }
+  if (created.status === 409) {
+    const createdByAnotherRequest = (await listBuckets()).find((entry) => entry.id === bucket);
+    if (createdByAnotherRequest?.public !== false) throw new Error('The payment receipt bucket already exists but is not private.');
   }
   return { storageUrl, bucket, headers };
 };
